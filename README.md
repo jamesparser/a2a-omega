@@ -13,15 +13,19 @@ hub owner's email so a human can follow along.
 - **No shared database, no persistent connection between agents.** Every agent already has an
   email inbox; the hub turns "agent ↔ agent messages" into inbox-to-inbox email, so it works
   across VPSes, home machines, and cloud sandboxes with zero networking setup.
-- **A2A-shaped.** The endpoint mirrors the Agent2Agent JSON-RPC shape (`agent-card` +
-  `SendMessage` + `/tasks/<peer>`), so agents that already speak A2A need almost no changes.
+- **A2A-spec.** The endpoint mirrors the Agent2Agent protocol (Google `a2aproject/a2a`, Linux
+  Foundation): a spec-shaped `agent-card` (`protocolVersion`, `capabilities`, `skills[]`),
+  JSON-RPC `SendMessage` / `tasks/get` / `tasks/cancel`, task state transitions
+  (`submitted → working → completed/failed/canceled` with per-task history), plus optional
+  **webhook push** on terminal state — so any standard A2A client (OpenClaw SDK, plain
+  JSON-RPC) can interoperate, and poll-only stays the default.
 - **Owner observability.** Set `A2A_TRANSCRIPT_EMAIL` and you get a digest of every agent↔agent
   exchange each day — the "input your email to receive a daily transcript" feature.
 
 ## Components
 | File | Role |
 |------|------|
-| `a2a_hub.py` | The routing server: JSON-RPC `SendMessage`, agent-card, task store, reply polling, daily transcript. |
+| `a2a_hub.py` | The routing server: A2A-spec agent-card, JSON-RPC `SendMessage`/`tasks/get`/`tasks/cancel`, task state machine (with transition history), AgentMail reply polling, optional webhook push, daily transcript. |
 | `a2a_client.py` | One-agent client: `poll` my inbox for `[a2a]` tasks, `send` a task to a peer. |
 | `poller.py` | Optional: watch N inboxes for external API-key / verify-link drops, auto-forward to the owner. |
 | `config/peers.example.json` | Peer registry template (agent → inbox + API key). |
@@ -43,10 +47,17 @@ python a2a_client.py poll   # read my new [a2a] tasks
 ### Endpoints
 | Method | Path | Purpose |
 |--------|------|---------|
-| `GET`  | `/.well-known/agent-card.json` | agent card |
-| `POST` | `/a2a/v1` | `SendMessage` (async; result delivered by email, poll `/tasks/<peer>`) |
-| `GET`  | `/tasks/<peer>` | task history for a peer |
-| `GET`  | `/healthz` | liveness |
+| `GET`  | `/.well-known/agent-card.json` | A2A-spec agent card (`protocolVersion`, `capabilities`, `skills[]`) |
+| `POST` | `/a2a/v1` | JSON-RPC: `SendMessage` / `message/send` / `tasks/send` (async; result by email), `tasks/get`, `tasks/cancel` |
+| `GET`  | `/tasks/<peer>` | task history for a peer (each task carries its state-transition `history`) |
+| `GET`  | `/healthz` | liveness (`ok`, peer count, `protocolVersion`) |
+
+### Task lifecycle & push
+Task states: `submitted → working → completed | failed | canceled` (every transition is
+recorded in `task["history"]`). Set `A2A_PUSH_WEBHOOK` to an HTTPS URL and the hub POSTs a JSON
+event `{task:{id, peer, status, result, history}}` when a task reaches a terminal state.
+Default is poll-only (`tasks/get` or the AgentMail inbox), which matches A2A's
+`pushNotifications: false` capability.
 
 ## Security
 - **Bind to a private interface.** Default is `127.0.0.1`; a private agent fleet typically
