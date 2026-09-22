@@ -1,0 +1,10 @@
+# runtime state — never commit
+tasks/
+inbox/
+config/peers.json
+.env
+.a2a_seen
+*.log
+__pycache__/
+m3_forwarded.json
+poll.pid
