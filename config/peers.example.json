@@ -1,0 +1,11 @@
+{
+  "alpha-agent": {
+    "agent_mail_key": "am_us_...",
+    "inbox": "alpha-agent@agentmail.to",
+    "note": "example peer - replace with your fleet's real inboxes/keys"
+  },
+  "beta-agent": {
+    "agent_mail_key": "am_us_...",
+    "inbox": "beta-agent@agentmail.to"
+  }
+}
