@@ -48,6 +48,10 @@ AGENTMAIL_API_KEY = os.environ.get("A2A_AGENTMAIL_API_KEY", "")
 TRANSCRIPT_EMAIL = os.environ.get("A2A_TRANSCRIPT_EMAIL", "")
 TRANSCRIPT_INTERVAL_SEC = int(os.environ.get("A2A_TRANSCRIPT_INTERVAL_SEC", "86400"))
 
+# Optional: webhook push on task terminal state (submitted->...->completed/failed).
+# Empty = poll-only (default). Set to an HTTPS URL to receive JSON task events.
+PUSH = os.environ.get("A2A_PUSH_WEBHOOK", "")
+
 # Peer registry: {peer: {"inbox": ..., "agent_mail_key": ..., "note": ...}}
 PEERS_FILE = os.environ.get("A2A_PEERS_FILE", os.path.join(ROOT, "config", "peers.json"))
 
@@ -142,34 +146,57 @@ def _persist(peer, entry):
         f.write(json.dumps(entry, default=str) + "\n")
 
 
+def _set_status(entry, peer, new_status, note=None):
+    """Task state transition: submitted -> working -> completed/failed (+ optional webhook)."""
+    entry["status"] = new_status
+    entry["updated"] = time.time()
+    entry.setdefault("history", []).append({"status": new_status, "ts": entry["updated"]})
+    if note:
+        entry["result"] = note
+    if new_status in ("completed", "failed") and PUSH:
+        _push(entry, peer)
+    _persist(peer, entry)
+
+
+def _push(entry, peer):
+    """Fire-and-forget webhook notification on task terminal state (optional, opt-in)."""
+    url = PUSH
+    if not url:
+        return
+    payload = {"task": {"id": entry["id"], "peer": peer, "status": entry["status"],
+                        "result": entry.get("result"), "history": entry.get("history")}}
+    try:
+        req = urllib.request.Request(url, data=json.dumps(payload).encode(),
+                                     headers={"Content-Type": "application/json",
+                                              "User-Agent": f"{AGENT_NAME}/1.1"})
+        urllib.request.urlopen(req, timeout=10).read()
+    except Exception as e:  # noqa: BLE001 - push is best-effort
+        print(f"[push] webhook {url} failed: {e}")
+
+
 def _route(peer, entry):
     """Translate an A2A task into the peer's email transport."""
     global _seen_reply_ids
+    _set_status(entry, peer, "working")
     try:
         peers = load_peers()
         p = peers.get(peer, {})
         key = p.get("agent_mail_key", "")
         inbox = p.get("inbox", "")
         if not key:
-            entry["result"] = f"[hub] No transport configured for {peer}. Task stored."
-            entry["status"] = "stored"
+            _set_status(entry, peer, "failed", f"[hub] No transport configured for {peer}. Task stored.")
             return
         if not inbox:
-            entry["result"] = f"[hub] Cannot deliver to {peer}: no inbox configured."
-            entry["status"] = "error"
+            _set_status(entry, peer, "failed", f"[hub] Cannot deliver to {peer}: no inbox configured.")
             return
         res = am_send(inbox, f"[a2a] {peer}", json.dumps(entry, default=str))
         if isinstance(res, dict) and "error" in res:
-            entry["result"] = f"[hub] delivery FAILED to {inbox}: {res['error']}"
-            entry["status"] = "error"
+            _set_status(entry, peer, "failed", f"[hub] delivery FAILED to {inbox}: {res['error']}")
         else:
-            entry["result"] = f"[hub] Message delivered to {peer} ({inbox}). Poll for reply."
-            entry["status"] = "done"
+            _set_status(entry, peer, "completed",
+                       f"[hub] Message delivered to {peer} ({inbox}). Poll for reply.")
     except Exception as e:  # noqa: BLE001
-        entry["result"] = f"[hub] ROUTE EXCEPTION: {type(e).__name__}: {e}"
-        entry["status"] = "error"
-    finally:
-        _persist(peer, entry)
+        _set_status(entry, peer, "failed", f"[hub] ROUTE EXCEPTION: {type(e).__name__}: {e}")
 
 
 # ---------------------------------------------------------------- transcript
@@ -222,19 +249,38 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/.well-known/agent-card.json":
             card = {
+                "protocolVersion": "0.3.0",
                 "name": AGENT_NAME,
                 "description": "Self-hosted Agent2Agent routing hub: bridges AI agents "
-                               "over email transport with an A2A-shaped JSON-RPC interface.",
-                "url": f"http://{HUB_HOST}:{HUB_PORT}",
-                "transport": {"type": "jsonrpc/http"},
-                "capabilities": {"push": False},
+                               "over email transport with an A2A-spec JSON-RPC interface. "
+                               "Cross-ecosystem agent-to-agent messaging (OpenClaw, Hermes, "
+                               "any JSON-RPC A2A client).",
+                "url": f"http://{HUB_HOST}:{HUB_PORT}/a2a/v1",
+                "preferredTransport": "JSONRPC",
+                "capabilities": {
+                    "streaming": False,
+                    "pushNotifications": bool(os.environ.get("A2A_PUSH_WEBHOOK_DEFAULT", "")),
+                    "stateTransitionHistory": True,
+                },
+                "defaultInputModes": ["text"],
+                "defaultOutputModes": ["text"],
+                "skills": [
+                    {"id": "agent-to-agent", "name": "Cross-agent messaging",
+                     "description": "Route a text task to a peer agent's inbox; async delivery, result on poll or webhook.",
+                     "tags": ["a2a", "multi-agent", "whitehat"]},
+                    {"id": "daily-transcript", "name": "Daily transcript",
+                     "description": "Owner receives a digest of all agent<->agent exchanges.",
+                     "tags": ["ops", "logging"]},
+                ],
+                "version": "1.1.0",
             }
             self._send_json(200, card)
         elif self.path.startswith("/tasks/"):
             peer = os.path.basename(self.path)
             self._send_json(200, tasks.get(peer, []))
         elif self.path == "/healthz":
-            self._send_json(200, {"ok": True, "peers": len(load_peers())})
+            self._send_json(200, {"ok": True, "peers": len(load_peers()),
+                                  "protocolVersion": "0.3.0"})
         else:
             self._send_json(404, {"error": "not found"})
 
@@ -254,10 +300,41 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         method = payload.get("method")
-        # Accept "SendMessage" (A2A), "message/send"/"tasks/send" (spec),
-        # and OMITTED method (some A2A SDKs send params without it).
+        params = payload.get("params") or {}
+        # A2A-spec methods + legacy aliases:
+        #   SendMessage / message/send / tasks/send -> async task delivery
+        #   tasks/get (alias GET /tasks/<id>) -> task state
+        #   tasks/cancel -> mark a not-yet-completed task canceled
+        #   OMITTED method (some A2A SDKs send params without a method field)
+        if method in ("tasks/get", "task/get"):
+            task_id = str((params.get("task_id") or params.get("id") or "")).replace("/", "_")
+            for lst in tasks.values():
+                for t in lst:
+                    if t["id"] == task_id:
+                        self._send_json(200, {"jsonrpc": "2.0", "id": payload.get("id"),
+                                              "result": {"task": t}})
+                        return
+            self._send_json(404, {"jsonrpc": "2.0", "id": payload.get("id"),
+                                  "error": f"task {task_id} not found"})
+            return
+        if method in ("tasks/cancel", "task/cancel"):
+            task_id = str((params.get("task_id") or params.get("id") or "")).replace("/", "_")
+            for lst in tasks.values():
+                for t in lst:
+                    if t["id"] == task_id and t["status"] in ("submitted", "working"):
+                        t["_canceled"] = True
+                        _set_status(t, t.get("peer", "?"), "canceled",
+                                    "[hub] task canceled by client")
+                        self._send_json(200, {"jsonrpc": "2.0", "id": payload.get("id"),
+                                              "result": {"task": t}})
+                        return
+            self._send_json(404, {"jsonrpc": "2.0", "id": payload.get("id"),
+                                  "error": f"task {task_id} not found or already terminal"})
+            return
         if method not in ("SendMessage", "message/send", "tasks/send") and method is not None:
-            self._send_json(400, {"error": f"unknown method {method!r}"})
+            self._send_json(400, {"jsonrpc": "2.0", "id": payload.get("id"),
+                                  "error": f"unknown method {method!r}",
+                                  "hint": "POST JSON-RPC to /a2a/v1: {\"method\":\"SendMessage\",\"peer\":\"<peer>\",\"params\":{\"message\":{\"messageId\":...,\"parts\":[{\"text\":...}],\"sender\":...}}} | tasks/get | tasks/cancel"})
             return
 
         params = payload.get("params") or {}
@@ -274,14 +351,16 @@ class Handler(BaseHTTPRequestHandler):
         peer = str(peer).replace("/", "_")
 
         entry = {"id": str(task_id), "peer": peer, "sender": sender, "prompt": prompt,
-                 "status": "running", "result": None, "updated": time.time()}
+                 "status": "submitted", "result": None, "updated": time.time(),
+                 "history": [{"status": "submitted", "ts": time.time()}]}
         tasks.setdefault(peer, []).append(entry)
         threading.Thread(target=_route, args=(peer, entry), daemon=True).start()
 
         self._send_json(200, {
             "jsonrpc": "2.0", "id": payload.get("id"),
             "result": {"task": {"id": str(task_id), "status": "submitted",
-                                 "note": f"async delivery via email; poll GET /tasks/{peer}"}},
+                                 "note": f"async delivery via email; poll GET /tasks/{peer} "
+                                         f"or JSON-RPC tasks/get; history in task.stateTransitions"}},
         })
 
 
@@ -313,11 +392,9 @@ def poll_loop():
                         data = None
                 task_id = (data or {}).get("task_id") or (data or {}).get("id")
                 for t in tasks.get(peer, []):
-                    if t["id"] == task_id and t["status"] == "running":
+                    if t["id"] == task_id and t["status"] in ("submitted", "working"):
                         t["result"] = (data or {}).get("result") or text
-                        t["status"] = "done"
-                        t["updated"] = now
-                        _persist(peer, t)
+                        _set_status(t, peer, "completed", "replied")
         if TRANSCRIPT_EMAIL and now - _last_transcript_ts[0] >= TRANSCRIPT_INTERVAL_SEC:
             _last_transcript_ts[0] = now
             try:
