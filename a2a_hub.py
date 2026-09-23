@@ -28,6 +28,23 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 # ---------------------------------------------------------------- config
 ROOT = os.path.dirname(os.path.abspath(__file__))
+
+def _load_dotenv():
+    """Load <ROOT>/.env if present (stdlib only). Never overrides an already-set
+    environment variable, so real env / container config still wins."""
+    fp = os.environ.get("A2A_ENV_FILE", os.path.join(ROOT, ".env"))
+    if not os.path.exists(fp):
+        return
+    with open(fp, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+
+_load_dotenv()
+
 TASKS = os.environ.get("A2A_TASKS_DIR", os.path.join(ROOT, "tasks"))
 INBOX_DIR = os.environ.get("A2A_INBOX_DIR", os.path.join(ROOT, "inbox"))
 os.makedirs(TASKS, exist_ok=True)
@@ -72,7 +89,7 @@ def load_peers():
 
 # ---------------------------------------------------------------- AgentMail
 def _vault_key(site):
-    """Optional helper: pull the AgentMail key from a local vault CLI.
+    """Optional helper: pull the API key from a local vault CLI.
 
     Expects `vault.py get <site> --master-password $VAULT_MASTER_PASSWORD`
     style output containing a 'password:' line. All paths/passwords come
@@ -139,6 +156,52 @@ def am_poll(inbox, key):
         return []
 
 
+# ---------------------------------------------------------------- MailSlurp fallback
+MS_API_BASE = "https://api.mailslurp.com"
+MS_DEFAULT_KEY_SITE = "MailSlurp"
+
+
+def _vault_mailslurp_key(site_name=None):
+    """Read a MailSlurp API key from the vault (never printed)."""
+    site = site_name or os.environ.get("A2A_MAILSLURP_KEY_SITE", MS_DEFAULT_KEY_SITE)
+    return _vault_key(site)
+
+
+def ms_send_to_inbox(inbox_id, key, subject, text):
+    """Send a test-style email into a MailSlurp inbox (POST /inboxes/{id}).
+    Returns (status_code, response_body_or_None).
+    Free tier: 1 To, plain/html body, no custom from.
+    """
+    url = f"{MS_API_BASE}/inboxes/{inbox_id}"
+    payload = json.dumps({
+        "to": [f"test+{int(time.time())}@sandbox.zazamail.link"],
+        "subject": subject,
+        "body": text,
+    }).encode()
+    req = urllib.request.Request(url, data=payload, method="POST",
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+        })
+    try:
+        r = urllib.request.urlopen(req, timeout=15)
+        return r.status, r.read().decode()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode(errors="replace")
+
+
+def ms_retry(peer, entry, ms_inbox, ms_key_site=None):
+    """Retry delivery via MailSlurp when AgentMail fails. Returns True on success."""
+    key = _vault_mailslurp_key(ms_key_site)
+    code, body = ms_send_to_inbox(ms_inbox, key, f"[a2a] {peer} retry",
+                                  json.dumps(entry, default=str))
+    if code == 201:
+        print(f"[ms-fallback] POSTed to {ms_inbox} -> {code} OK")
+        return True
+    print(f"[ms-fallback] POST to {ms_inbox} -> {code} {body[:80]}")
+    return False
+
+
 # ---------------------------------------------------------------- routing
 def _persist(peer, entry):
     fp = os.path.join(TASKS, f"{peer}.jsonl")
@@ -191,7 +254,17 @@ def _route(peer, entry):
             return
         res = am_send(inbox, f"[a2a] {peer}", json.dumps(entry, default=str))
         if isinstance(res, dict) and "error" in res:
-            _set_status(entry, peer, "failed", f"[hub] delivery FAILED to {inbox}: {res['error']}")
+            err_body = res["error"]
+            # On HTTP 403 or error key -> retry via MailSlurp if peer has mailslurp fields
+            ms_inbox = p.get("mailslurp_inbox", "")
+            ms_key_site = p.get("mailslurp_api_key_site")
+            if ms_inbox:
+                ok = ms_retry(peer, entry, ms_inbox, ms_key_site)
+                _set_status(entry, peer, "completed" if ok else "failed",
+                           f"[hub] AM delivery failed ({res['error']}); MailSlurp fallback: {'ok' if ok else 'also failed'}")
+            else:
+                _set_status(entry, peer, "failed",
+                           f"[hub] delivery FAILED to {inbox}: {res['error']}")
         else:
             _set_status(entry, peer, "completed",
                        f"[hub] Message delivered to {peer} ({inbox}). Poll for reply.")
