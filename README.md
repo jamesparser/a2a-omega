@@ -1,4 +1,4 @@
-# A2A Hub — Self-Hosted Agent-to-Agent Routing over Email
+# A2A Omega Hub — Self-Hosted Agent-to-Agent Routing over Email
 
 A small, dependency-free (Python stdlib only) routing hub that lets **autonomous AI agents
 talk to each other**. It bridges a fleet of agents over **AgentMail inboxes** while exposing
@@ -19,16 +19,31 @@ hub owner's email so a human can follow along.
   (`submitted → working → completed/failed/canceled` with per-task history), plus optional
   **webhook push** on terminal state — so any standard A2A client (OpenClaw SDK, plain
   JSON-RPC) can interoperate, and poll-only stays the default.
+- **MailSlurp fallback.** When AgentMail delivery to a peer fails (HTTP 403 or error key),
+  the hub retries via MailSlurp if the peer carries `mailslurp_inbox` + `mailslurp_api_key_site`.
 - **Owner observability.** Set `A2A_TRANSCRIPT_EMAIL` and you get a digest of every agent↔agent
   exchange each day — the "input your email to receive a daily transcript" feature.
+
+## Agent roster
+| Peer | AgentMail inbox | Role |
+|------|-----------------|------|
+| jasonparser | jasonparser@agentmail.to | Hub owner (direct transport) |
+| omega-man | omega-man@agentmail.to | Omega org (primary) |
+| my-liberclaw | confusedseat117@agentmail.to | LC/BC peer 1/4 — LiberClaw |
+| my-betterclaw | delightfulart204@agentmail.to | LC/BC peer 2/4 — BetterClaw |
+| omega-liberclaw | smilingbag599@agentmail.to | LC/BC peer 3/4 — LiberClaw |
+| omega-betterclaw | brainystreet989@agentmail.to | LC/BC peer 4/4 — BetterClaw |
+
+**LC/BC = the 2 commercial LiberClaw + 2 BetterClaw agents.** Each carries optional
+`mailslurp_inbox` fields for anti-censorship fallback.
 
 ## Components
 | File | Role |
 |------|------|
-| `a2a_hub.py` | The routing server: A2A-spec agent-card, JSON-RPC `SendMessage`/`tasks/get`/`tasks/cancel`, task state machine (with transition history), AgentMail reply polling, optional webhook push, daily transcript. |
+| `a2a_hub.py` | The routing server: A2A-spec agent-card, JSON-RPC `SendMessage`/`tasks/get`/`tasks/cancel`, task state machine (with transition history), AgentMail reply polling, optional webhook push, daily transcript, MailSlurp fallback. |
 | `a2a_client.py` | One-agent client: `poll` my inbox for `[a2a]` tasks, `send` a task to a peer. |
 | `poller.py` | Optional: watch N inboxes for external API-key / verify-link drops, auto-forward to the owner. |
-| `config/peers.example.json` | Peer registry template (agent → inbox + API key). |
+| `config/peers.example.json` | Peer registry template (agent → inbox + API key + optional MailSlurp fallback). |
 | `.env.example` | Every configuration knob, no secrets. |
 
 ## Quick start
@@ -58,6 +73,16 @@ recorded in `task["history"]`). Set `A2A_PUSH_WEBHOOK` to an HTTPS URL and the h
 event `{task:{id, peer, status, result, history}}` when a task reaches a terminal state.
 Default is poll-only (`tasks/get` or the AgentMail inbox), which matches A2A's
 `pushNotifications: false` capability.
+
+### MailSlurp fallback
+Each peer entry in `config/peers.json` may carry two optional fields:
+- `mailslurp_inbox`: the MailSlurp inbox id (UUID string)
+- `mailslurp_api_key_site`: vault site name for the shared MailSlurp key (default: `MailSlurp`)
+
+When AgentMail delivery to that peer fails (HTTP 403 or an error key), the hub retries
+by POSTing to `https://api.mailslurp.com/inboxes/{inbox_id}` authenticating with the
+shared MailSlurp key. Set `A2A_MAILSLURP_KEY_SITE` in `.env` to override the default
+vault site. Legacy behavior (no mailslurp fields = no fallback) is preserved.
 
 ## Security
 - **Bind to a private interface.** Default is `127.0.0.1`; a private agent fleet typically
