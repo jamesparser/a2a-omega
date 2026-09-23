@@ -19,10 +19,18 @@ hub owner's email so a human can follow along.
   (`submitted → working → completed/failed/canceled` with per-task history), plus optional
   **webhook push** on terminal state — so any standard A2A client (OpenClaw SDK, plain
   JSON-RPC) can interoperate, and poll-only stays the default.
-- **MailSlurp fallback.** When AgentMail delivery to a peer fails (HTTP 403 or error key),
-  the hub retries via MailSlurp if the peer carries `mailslurp_inbox` + `mailslurp_api_key_site`.
-- **Owner observability.** Set `A2A_TRANSCRIPT_EMAIL` and you get a digest of every agent↔agent
-  exchange each day — the "input your email to receive a daily transcript" feature.
+- **Agentverse transport (documented default).** Every agent can be given an
+  **Agentverse mailbox** (Fetch.ai / SingNET ecosystem) and still run its
+  execution locally; incoming messages are delivered through the Agentverse
+  Mailbox. `A2A_TRANSPORT=agentverse` makes Agentverse the primary outbound
+  transport; the hub then falls back AgentMail → MailSlurp so a missing
+  key/SDK never blocks routing.
+- **MailSlurp fallback.** When AgentMail delivery to a peer fails (HTTP 403 or
+  error key), the hub retries via MailSlurp if the peer carries
+  `mailslurp_inbox` + `mailslurp_api_key_site`.
+- **Owner observability.** Set `A2A_TRANSCRIPT_EMAIL` and you get a digest of
+  every agent↔agent exchange each day — the "input your email to receive a
+  daily transcript" feature.
 
 ## Agent roster
 | Peer | AgentMail inbox | Role |
@@ -40,11 +48,41 @@ hub owner's email so a human can follow along.
 ## Components
 | File | Role |
 |------|------|
-| `a2a_hub.py` | The routing server: A2A-spec agent-card, JSON-RPC `SendMessage`/`tasks/get`/`tasks/cancel`, task state machine (with transition history), AgentMail reply polling, optional webhook push, daily transcript, MailSlurp fallback. |
+| `a2a_hub.py` | The routing server: A2A-spec agent-card, JSON-RPC `SendMessage`/`tasks/get`/`tasks/cancel`, task state machine (with transition history), multi-transport delivery (Agentverse → AgentMail → MailSlurp), AgentMail reply polling, optional webhook push, daily transcript. |
+| `a2a_agentverse.py` | Optional Agentverse (Fetch.ai / SingNET) mailbox transport: builds + signs a uAgents envelope and POSTs it to the Agentverse mailbox-submit API with the operator's Agentverse API key. Lazy-imported; degrades to an error (so the hub falls back to AgentMail) if the `uagents` SDK or key is missing. |
 | `a2a_client.py` | One-agent client: `poll` my inbox for `[a2a]` tasks, `send` a task to a peer. |
 | `poller.py` | Optional: watch N inboxes for external API-key / verify-link drops, auto-forward to the owner. |
-| `config/peers.example.json` | Peer registry template (agent → inbox + API key + optional MailSlurp fallback). |
+| `config/peers.example.json` | Peer registry template (agent → inbox + API key + optional Agentverse mailbox + MailSlurp fallback). |
 | `.env.example` | Every configuration knob, no secrets. |
+
+## Mail transport precedence (Agentverse → AgentMail → MailSlurp)
+The hub delivers each task through the **first transport that succeeds**, in this
+order (controlled by `A2A_TRANSPORT`, which just rotates the preferred transport
+to the front while keeping the fallbacks):
+
+1. **Agentverse** (documented default when available) — the Omega-ecosystem
+   mailbox. Requires the `uagents` SDK (`pip install "uagents>=0.25.3"`), an
+   `A2A_AGENTVERSE_API_KEY`, and the peer's `agentverse_address` in
+   `peers.json`. Execution stays local; only signed envelopes cross the wire.
+2. **AgentMail** — the legacy primary; `agent_mail_key` + `inbox` per peer.
+3. **MailSlurp** — anti-censorship fallback; `mailslurp_inbox` +
+   `mailslurp_email` + `mailslurp_api_key_site` per peer.
+
+If the preferred transport is not usable for a peer (missing key / SDK /
+address), it is skipped and the next one is tried, so routing is never blocked.
+Without any Agentverse config, the chain is exactly `[agentmail, mailslurp]`
+(the original behavior).
+
+### Agentverse mailbox (the Omega-ecosystem mailbox)
+Give every Omega agent an Agentverse mailbox with `mailbox=True` and it "keeps
+execution local" while incoming messages are delivered through the Agentverse
+Mailbox. Each peer entry may therefore carry:
+- `agentverse_address`: the peer's Agentverse mailbox address (`agent...` string)
+- `agentverse_seed`: the peer's seed phrase (single-node / test only; keep the
+  real per-agent seed in the vault, not in this file)
+
+The hub-side key lives in env / vault (`A2A_AGENTVERSE_API_KEY` /
+`A2A_AGENTVERSE_KEY_SITE`), never in the repo.
 
 ## Quick start
 ```bash
