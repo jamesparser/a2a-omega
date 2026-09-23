@@ -1,11 +1,40 @@
 {
-  "alpha-agent": {
-    "agent_mail_key": "am_us_...",
-    "inbox": "alpha-agent@agentmail.to",
-    "note": "example peer - replace with your fleet's real inboxes/keys"
+  "jasonparser": {
+    "agent_mail_key": "am_us_inbox_bca9204242564d46404aa67f36cf429f7036baed4033318975d45f3294a6315a",
+    "inbox": "jasonparser@agentmail.to",
+    "note": "Hub owner; direct transport on this machine (no email needed)."
   },
-  "beta-agent": {
-    "agent_mail_key": "am_us_...",
-    "inbox": "beta-agent@agentmail.to"
+  "omega-man": {
+    "agent_mail_key": "am_us_d36321586732d70428262d61d7e139f13f706be51403e32685bd9f31634f6762",
+    "inbox": "omega-man@agentmail.to",
+    "note": "Omega's org key: 3 inboxes (omega-man, smilingbag599, brainystreet989). Verify via /v0/messages with this key."
+  },
+  "my-liberclaw": {
+    "agent_mail_key": "am_us_3db87941e8e5ca793f53efbc84972429a2a5169f1694b1a3570b33c87b41467c",
+    "inbox": "confusedseat117@agentmail.to",
+    "mailslurp_inbox": "d06b41dc-651e-43f5-b192-143e99452633",
+    "mailslurp_api_key_site": "MailSlurp-jason-parser-0xl",
+    "note": "LC/BC peer 1/4: LiberClaw agent (jason-parser-0xl fallback). LC = LiberClaw."
+  },
+  "my-betterclaw": {
+    "agent_mail_key": "am_us_3db87941e8e5ca793f53efbc84972429a2a5169f1694b1a3570b33c87b41467c",
+    "inbox": "delightfulart204@agentmail.to",
+    "mailslurp_inbox": "f2dafc51-80d4-4435-8cad-f4684fa48894",
+    "mailslurp_api_key_site": "MailSlurp-jason-parser-2-ueh",
+    "note": "LC/BC peer 2/4: BetterClaw agent (jason-parser-2-ueh fallback). BC = BetterClaw."
+  },
+  "omega-liberclaw": {
+    "agent_mail_key": "am_us_d36321586732d70428262d61d7e139f13f706be51403e32685bd9f31634f6762",
+    "inbox": "smilingbag599@agentmail.to",
+    "mailslurp_inbox": "6155d286-b3ec-4059-8a25-4b65a7dda8b7",
+    "mailslurp_api_key_site": "MailSlurp-jason-parser-3-l8e",
+    "note": "LC/BC peer 3/4: LiberClaw agent (jason-parser-3-l8e fallback)."
+  },
+  "omega-betterclaw": {
+    "agent_mail_key": "am_us_d36321586732d70428262d61d7e139f13f706be51403e32685bd9f31634f6762",
+    "inbox": "brainystreet989@agentmail.to",
+    "mailslurp_inbox": "0441d180-5e6d-455c-b82e-648db880bafe",
+    "mailslurp_api_key_site": "MailSlurp-jason-parser-4-lmd",
+    "note": "LC/BC peer 4/4: BetterClaw agent (jason-parser-4-lmd fallback)."
   }
 }
