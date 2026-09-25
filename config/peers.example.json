@@ -1,50 +1,58 @@
 {
-  "jasonparser": {
+  "jason-parser": {
+    "e2a_email": "jason-parser@agents.e2a.dev",
+    "agentverse_address": "agent1...",
+    "inbox": "\u2026@agentmail.to",
     "agent_mail_key": "am_us_...",
-    "inbox": "jasonparser@agentmail.to",
-    "agentverse_address": "<agent...>",
-    "note": "Hub owner; direct transport on this machine. Agentverse mailbox optional."
+    "note": "a2a-omega fleet identity; e2a + Agentverse mailbox (a2a-omega-e2a-fleet-jason-parser)"
+  },
+  "jasonparser": {
+    "e2a_email": "jasonparser@agents.e2a.dev",
+    "agentverse_address": "agent1...",
+    "inbox": "\u2026@agentmail.to",
+    "agent_mail_key": "am_us_...",
+    "note": "Hub owner; direct transport on this machine (no email needed)."
   },
   "omega-man": {
+    "e2a_email": "omega-man@agents.e2a.dev",
+    "agentverse_address": "agent1...",
+    "inbox": "\u2026@agentmail.to",
     "agent_mail_key": "am_us_...",
-    "inbox": "omega-man@agentmail.to",
-    "agentverse_address": "<agent...>",
-    "note": "Omega's org key: 3 inboxes (omega-man, smilingbag599, brainystreet989)."
+    "note": "a2a-omega fleet identity; e2a + Agentverse mailbox (a2a-omega-e2a-fleet-omega-man)"
+  },
+  "omega": {
+    "e2a_email": "omega@agents.e2a.dev",
+    "agentverse_address": "agent1...",
+    "inbox": "\u2026@agentmail.to",
+    "agent_mail_key": "am_us_...",
+    "note": "Omega's org key: 3 inboxes (omega-man, smilingbag599, brainystreet989). Verify via /v0/messages with this key."
   },
   "my-liberclaw": {
+    "e2a_email": "my-liberclaw@agents.e2a.dev",
+    "agentverse_address": "agent1...",
+    "inbox": "\u2026@agentmail.to",
     "agent_mail_key": "am_us_...",
-    "inbox": "peer-agentmail-inbox",
-    "agentverse_address": "<agent...>",
-    "mailslurp_inbox": "<mailbox-uuid>",
-    "mailslurp_email": "<peer-sandbox-email>@sandbox.zazamail.link",
-    "mailslurp_api_key_site": "MailSlurp-jason-parser-0xl",
-    "note": "LC/BC peer 1/4: LiberClaw agent. agentverse_* = Omega-ecosystem mailbox; mailslurp_* = anti-censorship fallback. Keys/seeds stay in the vault, never committed."
-  },
-  "my-betterclaw": {
-    "agent_mail_key": "am_us_...",
-    "inbox": "peer-agentmail-inbox",
-    "agentverse_address": "<agent...>",
-    "mailslurp_inbox": "<mailbox-uuid>",
-    "mailslurp_email": "<peer-sandbox-email>@sandbox.zazamail.link",
-    "mailslurp_api_key_site": "MailSlurp-jason-parser-2-ueh",
-    "note": "LC/BC peer 2/4: BetterClaw agent."
+    "note": "a2a-omega fleet identity; e2a + Agentverse mailbox (a2a-omega-e2a-fleet-my-liberclaw)"
   },
   "omega-liberclaw": {
+    "e2a_email": "omega-liberclaw@agents.e2a.dev",
+    "agentverse_address": "agent1...",
+    "inbox": "\u2026@agentmail.to",
     "agent_mail_key": "am_us_...",
-    "inbox": "smilingbag599@agentmail.to",
-    "agentverse_address": "<agent...>",
-    "mailslurp_inbox": "<mailbox-uuid>",
-    "mailslurp_email": "<peer-sandbox-email>@sandbox.zazamail.link",
-    "mailslurp_api_key_site": "MailSlurp-jason-parser-3-l8e",
-    "note": "LC/BC peer 3/4: LiberClaw agent."
+    "note": "a2a-omega fleet identity; e2a + Agentverse mailbox (a2a-omega-e2a-fleet-omega-liberclaw)"
+  },
+  "my-betterclaw": {
+    "e2a_email": "my-betterclaw@agents.e2a.dev",
+    "agentverse_address": "agent1...",
+    "inbox": "\u2026@agentmail.to",
+    "agent_mail_key": "am_us_...",
+    "note": "a2a-omega fleet identity; e2a + Agentverse mailbox (a2a-omega-e2a-fleet-my-betterclaw)"
   },
   "omega-betterclaw": {
+    "e2a_email": "omega-betterclaw@agents.e2a.dev",
+    "agentverse_address": "agent1...",
+    "inbox": "\u2026@agentmail.to",
     "agent_mail_key": "am_us_...",
-    "inbox": "brainystreet989@agentmail.to",
-    "agentverse_address": "<agent...>",
-    "mailslurp_inbox": "<mailbox-uuid>",
-    "mailslurp_email": "<peer-sandbox-email>@sandbox.zazamail.link",
-    "mailslurp_api_key_site": "MailSlurp-jason-parser-4-lmd",
-    "note": "LC/BC peer 4/4: BetterClaw agent."
+    "note": "a2a-omega fleet identity; e2a + Agentverse mailbox (a2a-omega-e2a-fleet-omega-betterclaw)"
   }
 }

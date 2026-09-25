@@ -75,13 +75,20 @@ PUSH = os.environ.get("A2A_PUSH_WEBHOOK", "")
 #   1) agentverse  -- requires uagents SDK + A2A_AGENTVERSE_API_KEY + peer
 #                     agentverse_address; agent execution stays local, inbox is
 #                     the Agentverse mailbox.
-#   2) agentmail   -- AgentMail inboxes (legacy primary; 'agentmail' or
+#   2) e2a         -- e2a.dev @agents.e2a.dev inboxes (two free accounts).
+#   3) agentmail   -- AgentMail inboxes (legacy primary; 'agentmail' or
 #                     'default' keep this as the first thing tried).
-#   3) mailslurp   -- anti-censorship fallback via per-peer mailslurp fields.
-# Default is 'agentverse' when the SDK + key are present, else 'agentmail'.
+#   4) mailslurp   -- anti-censorship fallback via per-peer mailslurp fields.
+# Default is 'agentverse' when the SDK + key are present, else 'e2a' when
+# E2A keys exist, else 'agentmail'.
 A2A_TRANSPORT = os.environ.get("A2A_TRANSPORT", "agentverse").strip().lower() or "agentverse"
 AGENTVERSE_API_KEY = os.environ.get("A2A_AGENTVERSE_API_KEY", "")
 AGENTVERSE_KEY_SITE = os.environ.get("A2A_AGENTVERSE_KEY_SITE", "")
+# e2a.dev account API keys (comma-separated or via a2a_e2a.py key files)
+E2A_API_KEYS = os.environ.get("E2A_API_KEYS", "") or ",".join(
+    k for k in (os.environ.get("E2A_API_KEY", ""),
+                os.environ.get("E2A2_API_KEY", ""),
+                os.environ.get("A2A_E2A_API_KEY", "")) if k)
 
 # Peer registry: {peer: {"inbox": ..., "agent_mail_key": ..., "note": ...}}
 PEERS_FILE = os.environ.get("A2A_PEERS_FILE", os.path.join(ROOT, "config", "peers.json"))
@@ -156,8 +163,8 @@ def am_send(to_inbox, subject, text):
     )
     try:
         return json.loads(urllib.request.urlopen(req, timeout=15).read())
-    except urllib.error.HTTPError as e:
-        return {"error": e.read().decode(errors="replace")}
+    except Exception as e:  # noqa: BLE001
+        return {"error": f"{type(e).__name__}: {e}"}
 
 
 def am_poll(inbox, key):
@@ -166,7 +173,7 @@ def am_poll(inbox, key):
         headers={"Authorization": f"Bearer {key}"})
     try:
         return json.loads(urllib.request.urlopen(req, timeout=10).read()).get("messages", [])
-    except urllib.error.HTTPError:
+    except Exception:  # noqa: BLE001 - poll is best-effort; never kill the hub
         return []
 
 
@@ -276,6 +283,31 @@ def _agentverse_usable(p):
     return True
 
 
+def _e2a_usable(p):
+    """True when the peer has an e2a address and at least one e2a key is set."""
+    if not p.get("e2a_email"):
+        return False
+    return bool(E2A_API_KEYS or os.environ.get("E2A_KEY_FILES"))
+
+
+def _send_e2a(p, entry):
+    """e2a.dev outbound (lazy import)."""
+    import importlib.util
+    here = os.path.dirname(os.path.abspath(__file__))
+    spec = importlib.util.spec_from_file_location(
+        "a2a_e2a", os.path.join(here, "a2a_e2a.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    from_email = p.get("e2a_from") or os.environ.get("A2A_HUB_SENDER_E2A", "")
+    to_email = p.get("e2a_email", "")
+    if not from_email:
+        # default: hub owner identity named in A2A_HUB_SENDER_INBOX's local part
+        sender = HUB_SENDER_INBOX.split("@")[0] if HUB_SENDER_INBOX else "jason-parser"
+        from_email = f"{sender}@agents.e2a.dev" if "@" not in sender else sender
+    text = entry if isinstance(entry, str) else json.dumps(entry, default=str)
+    return mod.e2a_send(from_email, to_email, f"[a2a] {entry.get('peer', to_email) if isinstance(entry, dict) else to_email}", text)
+
+
 def _transport_chain(p):
     """Return the ordered transport list to try, honouring A2A_TRANSPORT.
 
@@ -285,9 +317,11 @@ def _transport_chain(p):
     intact. Backward compatible: with agent_mail_key/inbox only and no
     agentverse fields, the chain is [agentmail, mailslurp] (legacy behavior).
     """
-    full = ["agentverse", "agentmail", "mailslurp"]
+    full = ["agentverse", "e2a", "agentmail", "mailslurp"]
     if not _agentverse_usable(p):
         full.remove("agentverse")
+    if not _e2a_usable(p):
+        full.remove("e2a")
     idx = full.index(A2A_TRANSPORT) if A2A_TRANSPORT in full else 0
     return full[idx:] + full[:idx]
 
@@ -322,6 +356,16 @@ def _route(peer, entry):
                                f"[hub] delivered via Agentverse mailbox to {peer} ({p.get('agentverse_address')}). Poll for reply.")
                     return
                 last_err["agentverse"] = res.get("error", "unspecified")
+            elif t == "e2a":
+                if not p.get("e2a_email"):
+                    last_err["e2a"] = f"no e2a_email configured for {peer}"
+                    continue
+                res = _send_e2a(p, entry)
+                if res.get("ok"):
+                    _set_status(entry, peer, "completed",
+                               f"[hub] delivered via e2a to {peer} ({p.get('e2a_email')}). Poll for reply.")
+                    return
+                last_err["e2a"] = res.get("error", "unspecified")
             elif t == "agentmail":
                 key = p.get("agent_mail_key", "")
                 inbox = p.get("inbox", "")
@@ -522,6 +566,13 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def poll_loop():
+    try:
+        return _poll_loop_inner()
+    except Exception as e:  # noqa: BLE001
+        print(f"[poll] fatal {type(e).__name__}: {e}")
+
+
+def _poll_loop_inner():
     """Every TICK_SEC: check each peer's inbox for replies; send transcript on schedule."""
     global _last_transcript_ts, _seen_reply_ids
     _last_transcript_ts[0] = time.time()
@@ -533,25 +584,28 @@ def poll_loop():
             inbox, key = cfg.get("inbox"), cfg.get("agent_mail_key")
             if not (inbox and key):
                 continue
-            for m in am_poll(inbox, key):
-                mid = m.get("message_id") or m.get("id")
-                if mid in _seen_reply_ids:
-                    continue
-                _seen_reply_ids.add(mid)
-                text = m.get("bodyText") or m.get("text") or ""
-                if not text:
-                    continue
-                data = None
-                if text.lstrip().startswith("{"):
-                    try:
-                        data = json.loads(text)
-                    except Exception:
-                        data = None
-                task_id = (data or {}).get("task_id") or (data or {}).get("id")
-                for t in tasks.get(peer, []):
-                    if t["id"] == task_id and t["status"] in ("submitted", "working"):
-                        t["result"] = (data or {}).get("result") or text
-                        _set_status(t, peer, "completed", "replied")
+            try:
+                for m in am_poll(inbox, key):
+                    mid = m.get("message_id") or m.get("id")
+                    if mid in _seen_reply_ids:
+                        continue
+                    _seen_reply_ids.add(mid)
+                    text = m.get("bodyText") or m.get("text") or ""
+                    if not text:
+                        continue
+                    data = None
+                    if text.lstrip().startswith("{"):
+                        try:
+                            data = json.loads(text)
+                        except Exception:
+                            data = None
+                    task_id = (data or {}).get("task_id") or (data or {}).get("id")
+                    for t in tasks.get(peer, []):
+                        if t["id"] == task_id and t["status"] in ("submitted", "working"):
+                            t["result"] = (data or {}).get("result") or text
+                            _set_status(t, peer, "completed", "replied")
+            except Exception as e:  # noqa: BLE001 - polling is best-effort, never crash the loop
+                print(f"[poll] {peer}: {type(e).__name__}: {e}")
         if TRANSCRIPT_EMAIL and now - _last_transcript_ts[0] >= TRANSCRIPT_INTERVAL_SEC:
             _last_transcript_ts[0] = now
             try:
