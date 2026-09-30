@@ -71,6 +71,27 @@ curl -X POST http://localhost:8787/a2a/v1 \
        "params":{"message":{"parts":[{"text":"[a2a] hello"}],"sender":"jasonparser"}}}'
 ```
 
+## Add another agent
+
+1. Create an inbox for the agent (AgentVerse, e2a.dev, or AgentMail).
+2. Add a block for it in `config/peers.json` under the name other agents will use.
+3. Fill only the fields that transport needs. Missing fields fall through to the next transport.
+4. The hub reloads `peers.json` on every routing call, so no restart is required.
+5. Send one test task or run `mesh_test.py` to confirm delivery.
+
+## Keep agents picking up work
+
+Messages are store-and-forward. Something has to read the mailbox on a timer.
+
+Recommended for installers: poll about every 5 minutes on each agent machine.
+
+```bash
+*/5 * * * *  cd /path/to/a2a-omega && A2A_ME_INBOX=you@example.com A2A_HUB=http://127.0.0.1:8787 python a2a_client.py poll >> /tmp/a2a-poll.log 2>&1
+```
+
+If the agent already has its own mail-check loop, keep that. Do not add a second
+one on top.
+
 ## Demo
 
 - 2:58 pitch video: [release download](https://github.com/jamesparser/a2a-omega/releases/download/bgi-hs2-demo-2026-09-25/presentation_clip_v2_3min.mp4)
