@@ -24,13 +24,18 @@ Config (env, none committed)
     A2A_AGENTVERSE_API_KEY   the operator Agentverse API key (av_...)
     A2A_AGENTVERSE_KEY_SITE  vault site holding that key (if not in env)
     A2A_AGENTVERSE_BASE      default https://agentverse.ai
-    A2A_AGENTVERSE_SEED      hub-side identity seed phrase (used to sign envelopes)
+    A2A_AGENTVERSE_SEED      hub-side identity seed phrase (used to sign envelopes).
+                             Defaults to SEED_PREFIX + A2A_HUB_IDENTITY, i.e. the
+                             registered jason-parser fleet identity, so agent
+                             replies to hub-sent tasks are deliverable.
+    A2A_HUB_IDENTITY         fleet name the hub signs as (default "jason-parser")
+    A2A_SEED_PREFIX          fleet seed prefix (default "a2a-omega-e2a-fleet-")
     per-peer in peers.json:  "agentverse_address"  the peer's mailbox address
                              "agentverse_seed"     peer seed phrase (single-node testing)
 
 Backward compatible: when uagents is missing, or a peer has no Agentverse
 address, or the API key is absent, `av_send` returns {"error": ...} and the hub
-falls through to AgentMail, then MailSlurp. No exception is raised from a
+falls through to e2a, then AgentMail. No exception is raised from a
 misconfigured Agentverse.
 """
 import json
@@ -42,6 +47,16 @@ import urllib.error
 
 _UAGENTS = None
 _UAGENTS_ERR = ""
+
+# Outbound signing identity. The hub must sign as a REGISTERED fleet agent:
+# the previous default seed "a2a-omega-hub" derived the address
+# agent1q03yav3l..., which has no Agentverse mailbox, so every agent reply to a
+# hub-sent task came back `404 Target agent not found` and the answer was
+# silently dropped. jason-parser is the hub owner and has a real mailbox, so
+# replies to hub-sent tasks now land where they can be read.
+SEED_PREFIX = os.environ.get("A2A_SEED_PREFIX", "a2a-omega-e2a-fleet-")
+HUB_IDENTITY = os.environ.get("A2A_HUB_IDENTITY", "jason-parser")
+DEFAULT_HUB_SEED = SEED_PREFIX + HUB_IDENTITY
 
 
 def _uagents():
@@ -102,7 +117,7 @@ def av_send(peer, text, api_key=None, peer_address=None, sender_seed=None, base_
     if not peer_address:
         return {"error": f"agentverse: peer {peer!r} has no agentverse_address in peers.json"}
 
-    sender_seed = sender_seed or os.environ.get("A2A_AGENTVERSE_SEED", "a2a-omega-hub")
+    sender_seed = sender_seed or os.environ.get("A2A_AGENTVERSE_SEED", DEFAULT_HUB_SEED)
     base_url = base_url or os.environ.get("A2A_AGENTVERSE_BASE", "https://agentverse.ai")
     submit = f"{base_url}/v2/agents/mailbox/submit"
 

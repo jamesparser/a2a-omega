@@ -2,14 +2,16 @@
 
 **Six AI agents that talk to each other over Agentverse mailboxes and e2a email, with an opt-in daily transcript to the hub owner.** Built for BGI HyperSprint (team 58, JasonParser Security) and real-world security-research coordination.
 
-## Status (2026-09-25)
+## Status (2026-10-02)
 
 | Piece | State |
 |---|---|
 | **Agentverse** | **Primary.** 6 mailbox agents + signed-envelope submit. Mesh 30/30 pong (p50 ~9s). |
 | **e2a.dev** | **Primary.** 6 fleet inboxes (`*@agents.e2a.dev`). Mesh 30/30 pong (p50 ~8s). Free plan = 20 msgs/day. |
-| Hub | JSON-RPC `SendMessage` / `tasks` / `agent-card` |
-| AgentMail / MailSlurp | Retired as fallbacks. Not used in the current chain. |
+| **Answering loop** | **Live.** All 6 agents poll and return substantive answers — verified end to end 6/6 by `deploy/verify_answers.py`. |
+| Hub | JSON-RPC `SendMessage` / `tasks` / `agent-card`; chain `agentverse → e2a → agentmail`; signs as the registered `jason-parser` identity. |
+| AgentMail | Last-resort fallback only. `deploy/lcb_responder.py` relays it to a real brain instead of acknowledging. |
+| MailSlurp | Removed 2026-09-25. Not in the chain. |
 
 **Mesh test (2026-09-25):** every ordered pair of 6 agents (30 pairs) got a pong on both e2a and Agentverse.
 
@@ -50,12 +52,31 @@ e2a free plan: 3 agents per account (two accounts). Agentverse keys stay local (
 
 ## Transport precedence
 
-`A2A_TRANSPORT` picks the primary. Fallback chain:
+`A2A_TRANSPORT` picks the primary (default `agentverse`). The hub always falls
+back through the same canonical order, so a missing key or SDK never blocks
+routing:
 
 1. **Agentverse** — `POST https://agentverse.ai/v2/agents/mailbox/submit` (signed Envelope, Bearer JWT)
 2. **e2a** — `POST https://api.e2a.dev/v1/agents/{from}/messages` with `{"to":[...],"subject","text"}`
+3. **AgentMail** — last resort, per-peer `inbox` + `agent_mail_key`
+
+A transport the peer cannot use is dropped (no `agentverse_address` / no
+`e2a_email` / no `agent_mail_key`); the order of the rest is preserved.
+MailSlurp was removed as a 4th fallback on 2026-09-25 — e2a and Agentverse both
+passed the full 6-agent mesh, so the extra hop only added an unused
+sandbox-inbox dependency.
 
 e2a needs a browser-like `User-Agent` (Cloudflare 1010 otherwise). Peers carry `e2a_email` + `agentverse_address` in `config/peers.json`.
+
+### The hub must sign as a registered identity
+
+`a2a_agentverse.py` signs outbound envelopes with `A2A_AGENTVERSE_SEED`, which
+defaults to `A2A_SEED_PREFIX + A2A_HUB_IDENTITY` (= the `jason-parser` fleet
+identity). **Do not point it at an ad-hoc seed.** An unregistered signing
+identity has no mailbox, so every agent that tries to answer a hub-sent task
+gets `404 Target agent not found` and the answer is silently lost. The poller
+defends against this too: on a 404 it redirects the answer to
+`A2A_REPLY_FALLBACK` (default `jason-parser`) instead of dropping it.
 
 ## Quick start
 
@@ -81,9 +102,59 @@ curl -X POST http://localhost:8787/a2a/v1 \
 
 ## Keep agents picking up work
 
-Messages are store-and-forward. Something has to read the mailbox on a timer.
+Messages are store-and-forward. Something has to read the mailbox on a timer —
+and it should **answer**, not merely acknowledge.
 
-Recommended for installers: poll about every 5 minutes on each agent machine.
+### The answering loop: `omega_poller.py`
+
+One process per agent, each with its own brain slot, persona and ledger:
+
+```bash
+A2A_AGENTVERSE_ENV=/path/agentverse.env \
+A2A_OWN_AGENTS=omega-man \
+A2A_ANSWER_BASE=http://127.0.0.1:4000/v1 \
+A2A_ANSWER_KEY=... A2A_ANSWER_MODEL=... \
+python3 omega_poller.py __actor=omega-man
+```
+
+Every `[a2a]` message gets a real answer:
+
+| Message | How it is answered |
+|---|---|
+| status-shaped (`working on`, `queue`, `need work`) | from that agent's **own ledger** — grounded, cannot confabulate |
+| anything else | through that agent's **own brain slot**, with its persona + live ledger injected as context, so it answers as itself |
+| `start your top task` directive | pulls the top of its own queue into `active` and confirms it (closed loop) |
+| brain unreachable | says so explicitly — it does **not** invent an answer |
+
+**One process per agent, always.** `__actor=<name>` narrows a process to a
+single agent. Running one process with a multi-name `A2A_OWN_AGENTS` *alongside*
+per-actor processes puts two pollers on every mailbox, racing on the same
+`.av_seen_<agent>.json` — which duplicates answers and can resurrect an envelope
+the other process already handled.
+
+A message that cannot be delivered is retried up to `A2A_MAX_ATTEMPTS` (default
+3) and then dropped loudly, so one bad envelope can never block a mailbox.
+Per-message exceptions are isolated and the dedupe state is persisted in a
+`finally` block.
+
+### Supervision: `deploy/`
+
+`deploy/omega_poller_keeper.sh` + `deploy/omega-a2a-poller.service` run one actor
+per agent under systemd: they start missing actors, **kill duplicate and legacy
+catch-all pollers**, and self-heal the uagents SDK after a container recreate.
+`deploy/README.md` covers topology and install; `deploy/status-check.ps1` is a
+read-only health check for the Windows side.
+
+Verify the fleet actually answers end to end:
+
+```bash
+python3 deploy/verify_answers.py --wait 90      # 6/6 REAL ANSWER expected
+```
+
+### Simple cron polling (installer shortcut)
+
+If you only need to *read* work rather than auto-answer, poll about every 5
+minutes on each agent machine:
 
 ```bash
 */5 * * * *  cd /path/to/a2a-omega && A2A_ME_INBOX=you@example.com A2A_HUB=http://127.0.0.1:8787 python a2a_client.py poll >> /tmp/a2a-poll.log 2>&1
@@ -91,6 +162,14 @@ Recommended for installers: poll about every 5 minutes on each agent machine.
 
 If the agent already has its own mail-check loop, keep that. Do not add a second
 one on top.
+
+## Tests
+
+```bash
+python3 test_omega_poller.py        # answering loop, retry bounds, 404 redirect, actor scoping
+python3 test_a2a_hub.py             # transport chain agentverse -> e2a -> agentmail
+python3 deploy/test_lcb_responder.py  # AgentMail fallback lane, single-instance lock
+```
 
 ## Demo
 

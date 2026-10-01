@@ -25,6 +25,20 @@ CONFIG (env, none committed) -------------------------------
   A2A_ANSWER_BASE         (optional) OpenAI-compatible /chat/completions base URL
   A2A_ANSWER_KEY          (optional) Bearer key for that endpoint
   A2A_ANSWER_MODEL        (optional) model id; if all three set, questions get answered
+  A2A_ANSWER_PROFILES     per-agent brain/persona file (default notes/answer_profiles.json)
+  A2A_ANSWER_MAX_TOKENS   brain max_tokens, default 400 (200 truncated real answers)
+  A2A_ANSWER_MAX_CHARS    reply body cap, default 800; over-cap answers say [truncated]
+  A2A_MAX_ATTEMPTS        retries per envelope before it is dropped, default 3.
+                          Stops one undeliverable message from blocking a mailbox.
+  A2A_REPLY_FALLBACK      where to send an answer when the envelope's sender is
+                          not a registered Agentverse agent (reply 404s). A fleet
+                          name or an agent1... address. Default "jason-parser";
+                          empty disables redirection.
+
+Behaviour: every [a2a] message gets a REAL answer, never a bare acknowledgement.
+Status questions are answered from the agent's own ledger (grounded); everything
+else goes to that agent's own brain slot so it answers as itself. If no brain is
+reachable the reply says so explicitly instead of inventing an answer.
 
 RUN ---------------------------------------------------------
   python omega_poller.py --once     # single cycle, then exit (smoke test)
@@ -191,6 +205,11 @@ def consume_directive(name, t):
 PROFILE_FILE = os.environ.get("A2A_ANSWER_PROFILES",
                               os.path.join(os.path.dirname(os.path.abspath(__file__)), "notes", "answer_profiles.json"))
 
+# Answer length. 200 tokens truncated real answers mid-sentence, which read as
+# evasive; both are tunable without a code change.
+ANSWER_MAX_TOKENS = int(os.environ.get("A2A_ANSWER_MAX_TOKENS", "400"))
+ANSWER_MAX_CHARS = int(os.environ.get("A2A_ANSWER_MAX_CHARS", "800"))
+
 
 def load_profile(name):
     """Per-agent brain profile: {system, model?, base?, key?}. Empty if absent.
@@ -221,7 +240,8 @@ def llm_answer(prompt, agent=None):
     if system:
         msgs.append({"role": "system", "content": system})
     msgs.append({"role": "user", "content": prompt})
-    body = json.dumps({"model": pmodel, "messages": msgs, "max_tokens": 200}).encode()
+    body = json.dumps({"model": pmodel, "messages": msgs,
+                       "max_tokens": ANSWER_MAX_TOKENS}).encode()
     h = {"Content-Type": "application/json"}
     if pkey:
         h["Authorization"] = "Bearer " + pkey
@@ -239,28 +259,6 @@ def send_as(key, as_name, target_name, text):
     return send_reply(key, as_name, identity(target_name).address, text)
 
 
-def llm_answer(prompt):
-    base = os.environ.get("A2A_ANSWER_BASE", "")
-    key = os.environ.get("A2A_ANSWER_KEY", "")
-    model = os.environ.get("A2A_ANSWER_MODEL", "")
-    if not (base and model):
-        return None
-    body = json.dumps({"model": model,
-                      "messages": [{"role": "user", "content": prompt}],
-                      "max_tokens": 200}).encode()
-    h = {"Content-Type": "application/json"}
-    if key:
-        h["Authorization"] = "Bearer " + key
-    try:
-        r = urllib.request.Request(base.rstrip("/") + "/chat/completions",
-                                   data=body, headers=h, method="POST")
-        d = json.loads(urllib.request.urlopen(r, timeout=60).read().decode())
-        return (d["choices"][0]["message"]["content"] or "").strip()
-    except Exception as e:
-        log(f"  LLM answer failed: {e}")
-        return None
-
-
 def load_seen(name):
     fp = os.path.join(STATE_DIR, f".av_seen_{name}.json")
     if os.path.exists(fp):
@@ -276,9 +274,160 @@ def save_seen(name, s):
         json.dump(sorted(s), f)
 
 
-def serve_once(name, key):
-    """Poll one agent's mailbox and auto-reply to any new [a2a] message."""
+# ---------------------------------------------------------------------------
+# Bounded retry state. Added after the 2026-10-01 stuck-mailbox incident: a
+# single unanswerable envelope used to raise out of serve_once before save_seen
+# ran, so the SAME message was retried every poll forever and blocked every
+# later message in that agent's mailbox. Attempts are now persisted, and a
+# message is dropped (loudly) after MAX_ATTEMPTS instead of looping.
+# ---------------------------------------------------------------------------
+MAX_ATTEMPTS = int(os.environ.get("A2A_MAX_ATTEMPTS", "3"))
+
+
+def load_attempts(name):
+    fp = os.path.join(STATE_DIR, f".av_attempts_{name}.json")
+    try:
+        d = json.load(open(fp))
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_attempts(name, d):
+    with open(os.path.join(STATE_DIR, f".av_attempts_{name}.json"), "w") as f:
+        json.dump(d, f)
+
+
+def _ack(name, key, me_addr, uid):
+    """Delete the envelope so Agentverse stops redelivering it."""
+    try:
+        http("DELETE", f"{BASE}/v2/agents/{me_addr}/mailbox/{uid}", key=key)
+    except Exception:
+        pass
+
+
+REPLY_FALLBACK = os.environ.get("A2A_REPLY_FALLBACK", "jason-parser")
+
+
+def _fallback_addr():
+    """Resolve A2A_REPLY_FALLBACK: either an agent1... address or a fleet name.
+
+    Used when the envelope's sender is not a registered Agentverse agent, so a
+    real answer is redirected somewhere readable instead of being dropped.
+    """
+    v = (REPLY_FALLBACK or "").strip()
+    if not v:
+        return ""
+    if v.startswith("agent1"):
+        return v
+    try:
+        return identity(v).address
+    except Exception:
+        return ""
+
+
+def _deliver(name, key, me_addr, sender_addr, reply, uid, kind):
+    """Send one reply. True when accepted (envelope can be ACKed), False to retry.
+
+    A 404 means the sender address is not a registered Agentverse agent - which
+    is exactly what the hub's old unregistered "a2a-omega-hub" signing identity
+    produced, losing every answer. In that case the reply is redirected to
+    A2A_REPLY_FALLBACK rather than discarded.
+    """
+    dst = sender_addr or me_addr  # degenerate: no sender, answer in place
+    rs, rb = send_reply(key, name, dst, reply)
+    if rs in (200, 202):
+        log(f"{name}: ANSWERED {dst} task {uid[:12]} [{kind}] ok")
+        _ack(name, key, me_addr, uid)
+        return True
+    if rs == 404:
+        fb = _fallback_addr()
+        if fb and fb != dst and fb != me_addr:
+            log(f"{name}: sender {dst} is not a registered agent (404); "
+                f"redirecting answer to fallback {fb}")
+            rs2, rb2 = send_reply(key, name, fb, reply)
+            if rs2 in (200, 202):
+                log(f"{name}: ANSWERED via fallback {fb} task {uid[:12]} [{kind}] ok")
+                _ack(name, key, me_addr, uid)
+                return True
+            rs, rb = rs2, rb2
+    log(f"{name}: reply FAILED to {dst} task {uid[:12]} [{kind}] "
+        f"-> {rs} {str(rb)[:120]}")
+    return False
+
+
+def _handle_one(name, key, me_addr, it, uid):
+    """Deal with ONE envelope and answer it for real.
+
+    Returns True when the envelope is fully handled (safe to mark seen), False
+    when delivery failed and it should be retried on a later cycle.
+    """
     from uagents_core.envelope import Envelope
+    env = it.get("envelope") or {}
+    text, sender_addr = "", env.get("sender", "")
+    try:
+        e = Envelope.model_validate(env)
+        text = e.decode_payload()
+    except Exception:
+        text = str(env)[:200]
+    t = text.strip()
+
+    # An inbound reply is terminal. Never chain-reply (that is what made agents
+    # ping-pong forever when they batch-sent to each other). 'ACK from' is the
+    # legacy wording still emitted by lcb_responder; 'REPLY from' is ours.
+    if "ACK from" in t or "REPLY from" in t:
+        # Record it before sweeping: this is how an operator reads what the rest
+        # of the fleet answered, so it must not vanish silently from the mailbox.
+        log(f"{name}: INBOUND from {sender_addr}: {t[:500]}")
+        _ack(name, key, me_addr, uid)
+        return True
+    # Only react to fleet [a2a] traffic; sweep anything else out of the mailbox.
+    if "[a2a]" not in t and "task" not in t.lower():
+        _ack(name, key, me_addr, uid)
+        return True
+
+    # Closed-loop work: a 'start your top task' directive pulls the top of THIS
+    # agent's own queue into active and confirms it (real self-assignment).
+    confirmed = consume_directive(name, t)
+    if confirmed:
+        reply = (f"[a2a] REPLY from {name} (agentverse): task {uid[:12]} "
+                 f"received. {confirmed}")
+        return _deliver(name, key, me_addr, sender_addr, reply, uid, "directive")
+
+    # Everything else gets a REAL answer, never a bare acknowledgement.
+    # STATUS questions are answered from the agent's own ledger (grounded, no
+    # confabulation); all other traffic goes to that agent's own brain slot, so
+    # it answers as itself with its persona and live ledger as context.
+    if looks_like_status(t):
+        ans, kind = status_answer(name, t), "ledger"
+    else:
+        ans, kind = llm_answer(t, agent=name), "brain"
+    if ans:
+        ans = ans.strip()
+        if len(ans) > ANSWER_MAX_CHARS:
+            ans = ans[:ANSWER_MAX_CHARS].rstrip() + " [truncated]"
+        reply = (f"[a2a] REPLY from {name} (agentverse): task {uid[:12]} received. "
+                 f"ANSWER: {ans}")
+    else:
+        # Brain unavailable: say so honestly rather than faking an answer.
+        reply = (f"[a2a] REPLY from {name} (agentverse): task {uid[:12]} received, "
+                 f"but my answer backend is unavailable (A2A_ANSWER_* brain unset or "
+                 f"it errored). Logged for the operator - I did NOT guess an answer.")
+        kind = "no-brain"
+    return _deliver(name, key, me_addr, sender_addr, reply, uid, kind)
+
+
+def serve_once(name, key):
+    """Poll one agent's mailbox and answer every new [a2a] message for real.
+
+    Robustness contract:
+      * each envelope is handled in its own try/except, so one bad message can
+        never block the rest of the mailbox;
+      * seen + attempt state is persisted in a finally block, so a crash
+        mid-cycle cannot make the same envelope retry forever;
+      * a message that keeps failing is dropped after A2A_MAX_ATTEMPTS and
+        logged as a permanent failure.
+    """
     me_addr = identity(name).address
     st, box = http("GET", f"{BASE}/v2/agents/{me_addr}/mailbox", key=key)
     if st != 200:
@@ -290,79 +439,39 @@ def serve_once(name, key):
         save_seen(name, set(it.get("uuid") for it in items if it.get("uuid")))
         log(f"{name}: armed; {len(items)} pre-existing marked seen")
         return
-    for it in items:
-        uid = it.get("uuid")
-        if not uid or uid in seen:
-            continue
-        seen.add(uid)
-        env = it.get("envelope") or {}
-        text, sender_addr = "", env.get("sender", "")
-        try:
-            e = Envelope.model_validate(env)
-            text = e.decode_payload()
-        except Exception:
-            text = str(env)[:200]
-        # Only react to fleet [a2a] traffic; ignore our own echoes.
-        t = text.strip()
-        if "ACK from" in t:
-            # It is already a reply - never chain-ACK (stops infinite loops
-            # when agents batch-send to each other). Just clean up the mailbox.
-            try:
-                http("DELETE", f"{BASE}/v2/agents/{me_addr}/mailbox/{uid}", key=key)
-            except Exception:
-                pass
-            continue
-        if "[a2a]" not in t and "task" not in t.lower():
-            try:
-                http("DELETE", f"{BASE}/v2/agents/{me_addr}/mailbox/{uid}", key=key)
-            except Exception:
-                pass
-            continue
-        # Closed-loop work: a 'start your top task' directive pulls the top of
-        # THIS agent's own queue into active and confirms it (real self-assignment).
-        if "[a2a]" in t or "task" in t.lower():
-            confirmed = consume_directive(name, t)
-            if confirmed:
-                reply = f"[a2a] ACK from {name} (agentverse): task {uid[:12]} received. {confirmed}"
-                rs, rb = send_reply(key, name, sender_addr or me_addr, reply)
-                log(f"{name}: DIRECTIVE-CONSUME task {uid[:12]} -> "
-                    + ("ok" if rs in (200, 202) else f"FAIL {rs}"))
-                try:
-                    http("DELETE", f"{BASE}/v2/agents/{me_addr}/mailbox/{uid}", key=key)
-                except Exception:
-                    pass
+    attempts = load_attempts(name)
+    try:
+        for it in items:
+            uid = it.get("uuid")
+            if not uid or uid in seen:
                 continue
-        # Build the reply: an ACK, plus an answer if it looks like a question.
-        # STATUS questions are answered from the agent's REAL ledger (grounded);
-        # other questions still go to the LLM. This stops confabulated status.
-        ans = None
-        reply = f"[a2a] ACK from {name} (agentverse): task {uid[:12]} received."
-        qmatch = re.search(r"\?|\bwhat\b|\bwho\b|\bwhere\b|\bwhen\b|\breport\b|\bpick\b|\bprefer\b", t, re.I)
-        if looks_like_status(t):
-            ans = status_answer(name, t)
-            if ans:
-                reply += f" ANSWER: {ans[:300]}"
-        elif qmatch:
-            ans = llm_answer(t, agent=name)
-            if ans:
-                reply += f" ANSWER: {ans[:300]}"
-        if not sender_addr:
-            sender_addr = me_addr  # degenerate; ack in place
-        has_ans = bool(ans)
-        rs, rb = send_reply(key, name, sender_addr, reply)
-        if rs in (200, 202):
-            log(f"{name}: REPLIED to {sender_addr[:14]}... task {uid[:12]} ok"
-                + (" (with LLM answer)" if has_ans else ""))
-        else:
-            log(f"{name}: reply FAILED {sender_addr[:14]} -> {rs} {str(rb)[:120]}")
-        try:
-            http("DELETE", f"{BASE}/v2/agents/{me_addr}/mailbox/{uid}", key=key)
-        except Exception:
-            pass
-    save_seen(name, seen)
+            ok = False
+            try:
+                ok = _handle_one(name, key, me_addr, it, uid)
+            except Exception as e:
+                log(f"{name}: handler error task {uid[:12]}: {type(e).__name__}: {e}")
+            if ok:
+                seen.add(uid)
+                attempts.pop(uid, None)
+                continue
+            n = attempts.get(uid, 0) + 1
+            if n >= MAX_ATTEMPTS:
+                seen.add(uid)
+                attempts.pop(uid, None)
+                _ack(name, key, me_addr, uid)
+                log(f"{name}: DROPPED task {uid[:12]} after {n} failed attempts "
+                    f"(not retrying; mailbox unblocked)")
+            else:
+                attempts[uid] = n
+                log(f"{name}: task {uid[:12]} attempt {n}/{MAX_ATTEMPTS} failed, will retry")
+    finally:
+        save_seen(name, seen)
+        save_attempts(name, attempts)
 
 
 def main():
+    global OWN_AGENTS   # narrowed by __actor= below; declared here because
+                        # OWN_AGENTS is read earlier in this function
     key = load_key()
     if not key:
         log("ERROR: no AGENTVERSE_API_KEY (set A2A_AGENTVERSE_ENV / A2A_AGENTVERSE_API_KEY)")
@@ -417,6 +526,21 @@ def main():
         led = queue_work(target, task)
         print(f"{target}: queue now {len(led.get('queue', []))} item(s) - last: {led.get('queue') and led['queue'][-1][:60]}")
         return 0
+
+    # __actor=<name> restricts THIS process to a single fleet agent. The
+    # per-actor launcher (run_poller_one.sh) passes it. Making it functional
+    # matters: without it a process started with a five-name A2A_OWN_AGENTS
+    # polls the whole fleet, so every mailbox had two pollers racing on the same
+    # .av_seen file and answering the same envelope twice.
+    for a in sys.argv[1:]:
+        if a.startswith("__actor="):
+            want = a.split("=", 1)[1].strip()
+            if want:
+                if want not in OWN_AGENTS:
+                    log(f"WARNING: __actor={want} is not in A2A_OWN_AGENTS={OWN_AGENTS}; "
+                        f"restricting to {want} anyway")
+                OWN_AGENTS = [want]
+                log(f"__actor={want}: this process answers for {want} only")
 
     log(f"omega poller starting: acting for {OWN_AGENTS}, poll every {POLL_SEC}s")
     once = "--once" in sys.argv

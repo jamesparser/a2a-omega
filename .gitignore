@@ -10,3 +10,11 @@ m3_forwarded.json
 poll.pid
 answer_profiles.json
 .av_seen*.json
+.av_attempts*.json
+
+# fallback-lane credentials (gaming laptop); never commit
+lcb_agents.json
+lcb_responder.lock
+lcb_seen/
+*.env
+!*.env.example

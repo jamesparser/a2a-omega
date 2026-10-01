@@ -71,16 +71,20 @@ PUSH = os.environ.get("A2A_PUSH_WEBHOOK", "")
 
 # --- Mail transport precedence (Job 7) ---
 # A2A_TRANSPORT picks the PRIMARY outbound transport when configured; the hub
-# always falls back in the order below so a missing key/SDK never blocks routing:
-#   1) agentverse  -- requires uagents SDK + A2A_AGENTVERSE_API_KEY + peer
-#                     agentverse_address; agent execution stays local, inbox is
-#                     the Agentverse mailbox.
+# always falls back in the order below so a missing key/SDK never blocks routing.
+# The chain is exactly three transports, in this order:
+#   1) agentverse  -- DEFAULT. Requires uagents SDK + A2A_AGENTVERSE_API_KEY +
+#                     peer agentverse_address; agent execution stays local, inbox
+#                     is the Agentverse mailbox.
 #   2) e2a         -- e2a.dev @agents.e2a.dev inboxes (two free accounts).
-#   3) agentmail   -- AgentMail inboxes (legacy primary; 'agentmail' or
-#                     'default' keep this as the first thing tried).
-#   4) mailslurp   -- anti-censorship fallback via per-peer mailslurp fields.
-# Default is 'agentverse' when the SDK + key are present, else 'e2a' when
-# E2A keys exist, else 'agentmail'.
+#   3) agentmail   -- AgentMail inboxes (last resort).
+# A transport is dropped from the chain for a peer that cannot use it (no
+# agentverse_address / no e2a_email / no agent_mail_key); the relative order of
+# the remaining ones is preserved. Setting A2A_TRANSPORT rotates that transport
+# to the front but never removes the others.
+# MailSlurp was removed as a 4th fallback on 2026-09-25: e2a + Agentverse both
+# passed the full 6-agent mesh (30/30 pong each), so the extra hop only added an
+# unused sandbox-inbox dependency.
 A2A_TRANSPORT = os.environ.get("A2A_TRANSPORT", "agentverse").strip().lower() or "agentverse"
 AGENTVERSE_API_KEY = os.environ.get("A2A_AGENTVERSE_API_KEY", "")
 AGENTVERSE_KEY_SITE = os.environ.get("A2A_AGENTVERSE_KEY_SITE", "")
@@ -177,64 +181,6 @@ def am_poll(inbox, key):
         return []
 
 
-# ---------------------------------------------------------------- MailSlurp fallback
-MS_API_BASE = "https://api.mailslurp.com"
-MS_DEFAULT_KEY_SITE = "MailSlurp"
-
-
-def _vault_mailslurp_key(site_name=None):
-    """Read a MailSlurp API key from the vault (never printed)."""
-    site = site_name or os.environ.get("A2A_MAILSLURP_KEY_SITE", MS_DEFAULT_KEY_SITE)
-    return _vault_key(site)
-
-
-def ms_send_to_inbox(inbox_id, key, subject, text, to_email=None):
-    """Send an email into a MailSlurp inbox (POST /inboxes/{id}).
-    Returns (status_code, response_body).
-    Free tier: 1 To, plain/html body, no custom from.
-
-    Free-sandbox restriction: POSTs only deliver to an *eligible sandbox inbox
-    owned by the same account*. So `to_email` should be the peer's own sandbox
-    mailbox email (the anti-censorship inbox that peer reads) -- not a foreign
-    address, which the API rejects with HTTP 429.
-    """
-    url = f"{MS_API_BASE}/inboxes/{inbox_id}"
-    recipient = to_email or f"test+{int(time.time())}@sandbox.zazamail.link"
-    payload = json.dumps({
-        "to": [recipient],
-        "subject": subject,
-        "body": text,
-    }).encode()
-    req = urllib.request.Request(url, data=payload, method="POST",
-        headers={
-            "Authorization": f"Bearer {key}",
-            "Content-Type": "application/json",
-        })
-    try:
-        r = urllib.request.urlopen(req, timeout=15)
-        return r.status, r.read().decode()
-    except urllib.error.HTTPError as e:
-        return e.code, e.read().decode(errors="replace")
-
-
-def ms_retry(peer, entry, ms_inbox, ms_key_site=None, ms_email=None):
-    """Retry delivery via MailSlurp when AgentMail fails. Returns True on success.
-
-    ms_inbox   : the peer's MailSlurp inbox id (POST target)
-    ms_key_site: vault site holding the MailSlurp key that owns that inbox
-    ms_email   : the peer's eligible sandbox email (the `to` recipient)
-    """
-    key = _vault_mailslurp_key(ms_key_site)
-    code, body = ms_send_to_inbox(ms_inbox, key, f"[a2a] {peer} retry",
-                                  json.dumps(entry, default=str),
-                                  to_email=ms_email)
-    if code == 201:
-        print(f"[ms-fallback] POSTed to {ms_inbox} -> {code} OK")
-        return True
-    print(f"[ms-fallback] POST to {ms_inbox} -> {code} {body[:120]}")
-    return False
-
-
 # ---------------------------------------------------------------- routing
 def _persist(peer, entry):
     fp = os.path.join(TASKS, f"{peer}.jsonl")
@@ -311,13 +257,14 @@ def _send_e2a(p, entry):
 def _transport_chain(p):
     """Return the ordered transport list to try, honouring A2A_TRANSPORT.
 
-    Default (agentverse) tries Agentverse -> AgentMail -> MailSlurp, dropping
-    Agentverse when it is not usable for this peer. Explicit A2A_TRANSPORT just
-    rotates that transport to the front of the same chain, so fallbacks remain
-    intact. Backward compatible: with agent_mail_key/inbox only and no
-    agentverse fields, the chain is [agentmail, mailslurp] (legacy behavior).
+    Canonical order is agentverse -> e2a -> agentmail. A transport the peer
+    cannot use is dropped (no agentverse_address, no e2a_email, no
+    agent_mail_key). Explicit A2A_TRANSPORT just rotates that transport to the
+    front of the same chain, so fallbacks remain intact. Backward compatible:
+    with agent_mail_key/inbox only and no agentverse or e2a fields, the chain is
+    [agentmail] (legacy behavior).
     """
-    full = ["agentverse", "e2a", "agentmail", "mailslurp"]
+    full = ["agentverse", "e2a", "agentmail"]
     if not _agentverse_usable(p):
         full.remove("agentverse")
     if not _e2a_usable(p):
@@ -341,7 +288,7 @@ def _send_agentverse(p, entry):
 
 def _route(peer, entry):
     """Translate an A2A task into a peer transport, trying in precedence order
-    (Agentverse -> AgentMail -> MailSlurp) and completing on the first success."""
+    (Agentverse -> e2a -> AgentMail) and completing on the first success."""
     global _seen_reply_ids
     _set_status(entry, peer, "working")
     try:
@@ -382,17 +329,6 @@ def _route(peer, entry):
                 _set_status(entry, peer, "completed",
                            f"[hub] Message delivered to {peer} ({inbox}). Poll for reply.")
                 return
-            elif t == "mailslurp":
-                ms_inbox = p.get("mailslurp_inbox", "")
-                if not ms_inbox:
-                    last_err["mailslurp"] = f"no mailslurp_inbox configured for {peer}"
-                    continue
-                ms_email = p.get("mailslurp_email") or p.get("inbox")
-                if ms_retry(peer, entry, ms_inbox, p.get("mailslurp_api_key_site"), ms_email):
-                    _set_status(entry, peer, "completed",
-                               f"[hub] delivered via MailSlurp fallback to {peer} ({ms_inbox}).")
-                    return
-                last_err["mailslurp"] = "mailslurp POST did not return 201"
         _set_status(entry, peer, "failed",
                    f"[hub] delivery failed for {peer}: "
                    + "; ".join(f"{k}={v}" for k, v in last_err.items()))
