@@ -8,3 +8,5 @@ config/peers.json
 __pycache__/
 m3_forwarded.json
 poll.pid
+answer_profiles.json
+.av_seen*.json
