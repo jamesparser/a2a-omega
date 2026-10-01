@@ -308,6 +308,9 @@ def _ack(name, key, me_addr, uid):
 
 REPLY_FALLBACK = os.environ.get("A2A_REPLY_FALLBACK", "jason-parser")
 
+# How much of an inbound reply is transcribed to the log (flattened to one line).
+INBOUND_LOG_CHARS = int(os.environ.get("A2A_INBOUND_LOG_CHARS", "1200"))
+
 
 def _fallback_addr():
     """Resolve A2A_REPLY_FALLBACK: either an agent1... address or a fleet name.
@@ -378,7 +381,11 @@ def _handle_one(name, key, me_addr, it, uid):
     if "ACK from" in t or "REPLY from" in t:
         # Record it before sweeping: this is how an operator reads what the rest
         # of the fleet answered, so it must not vanish silently from the mailbox.
-        log(f"{name}: INBOUND from {sender_addr}: {t[:500]}")
+        # Newlines are flattened so each transcript entry stays ONE log line -
+        # otherwise a markdown answer spans many lines and grep/tail shows only
+        # its heading, which reads as a truncated or empty answer.
+        flat = " ".join(t[:INBOUND_LOG_CHARS].split())
+        log(f"{name}: INBOUND from {sender_addr}: {flat}")
         _ack(name, key, me_addr, uid)
         return True
     # Only react to fleet [a2a] traffic; sweep anything else out of the mailbox.

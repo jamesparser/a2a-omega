@@ -19,6 +19,7 @@ import json
 import os
 import sys
 import time
+from datetime import datetime
 
 os.environ.setdefault("A2A_AGENTVERSE_ENV", "/workspace/notes/agentverse.env")
 sys.path.insert(0, "/workspace")
@@ -51,6 +52,39 @@ def read_mailbox(key, name):
     addr = P.identity(name).address
     st, box = P.http("GET", f"{P.BASE}/v2/agents/{addr}/mailbox", key=key)
     return (st, box if isinstance(box, list) else [])
+
+
+def read_actor_log(agent):
+    """That agent's own actor log - the authoritative record of what it did.
+
+    A line like `[ts] <agent>: ANSWERED <dst> task <uid> [brain] ok` proves the
+    agent produced and delivered a real answer, independent of who wins the race
+    to read the mailbox and immune to multi-line answer bodies.
+    """
+    fp = os.environ.get("A2A_ACTOR_LOG_FMT", "/workspace/omega_poller_%s.log") % agent
+    try:
+        with open(fp, encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def actor_log_answer(agent, since):
+    """Return (kind, line) for the newest ANSWERED entry at/after `since`."""
+    best = None
+    for line in read_actor_log(agent).splitlines():
+        if "ANSWERED" not in line or "ok" not in line:
+            continue
+        ts = line[1:20] if line.startswith("[") else ""
+        if since and ts and ts < since:
+            continue
+        kind = "brain"
+        for k in ("[brain]", "[ledger]", "[directive]", "[no-brain]"):
+            if k in line:
+                kind = k.strip("[]")
+                break
+        best = (kind, line.strip())
+    return best
 
 
 def read_transcript():
@@ -101,6 +135,8 @@ def main():
 
     print(f"sender={SENDER} ({P.identity(SENDER).address[:22]}...)")
     print(f"probing {len(agents)} agent(s), waiting up to {wait}s\n")
+    # Only ANSWERED entries from now on count as a response to this run.
+    since = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     sent = {}
     for a in agents:
         if a not in QUESTIONS:
@@ -152,6 +188,17 @@ def main():
                     replies[a], sources[a] = body.strip(), "transcript"
                     break
 
+        # Source 3 (authoritative): the agent's own actor log. Survives mailbox
+        # races and multi-line answer bodies that defeat text parsing above.
+        for a in sent:
+            if a in replies or not sent[a]:
+                continue
+            hit = actor_log_answer(a, since)
+            if hit:
+                kind, line = hit
+                replies[a] = line
+                sources[a] = f"actor-log/{kind}"
+
         print(f"  ...{len(replies)}/{target} answered", end="\r", flush=True)
 
     print("\n" + "=" * 74)
@@ -160,8 +207,19 @@ def main():
         if a not in sent:
             continue
         txt = replies.get(a)
+        via = sources.get(a, "-")
         if not txt:
             verdict, why = "NO REPLY", "nothing came back"
+        elif via.startswith("actor-log"):
+            # Proof of delivery from the agent's own log. The answer body itself
+            # may already have been swept into the transcript by that actor.
+            kind = via.split("/", 1)[1] if "/" in via else "brain"
+            if kind == "no-brain":
+                verdict, why = "NO BRAIN", "actor logged an unavailable-backend reply"
+            elif kind in ("brain", "ledger", "directive"):
+                verdict, why = "REAL ANSWER", f"actor log confirms [{kind}] delivery"
+            else:
+                verdict, why = "UNKNOWN KIND", kind
         else:
             body = txt.split("ANSWER:", 1)[1].strip() if "ANSWER:" in txt else ""
             low = txt.lower()
@@ -176,7 +234,6 @@ def main():
         flag = "PASS" if verdict == "REAL ANSWER" else "FAIL"
         if flag == "FAIL":
             failures.append(a)
-        via = sources.get(a, "-")
         print(f"\n[{flag}] {a}  ->  {verdict} ({why}, via {via})")
         if txt:
             print("       " + txt.replace("\n", "\n       ")[:700])

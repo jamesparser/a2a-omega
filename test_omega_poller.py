@@ -70,7 +70,9 @@ import omega_poller as P  # noqa: E402
 # stub from one test can never leak into the next (alphabetical run order).
 _REAL = {k: getattr(P, k) for k in
          ("identity", "http", "send_reply", "llm_answer", "load_ledger", "_handle_one",
-          "REPLY_FALLBACK", "MAX_ATTEMPTS", "serve_once", "load_key", "OWN_AGENTS", "log")}
+          "REPLY_FALLBACK", "MAX_ATTEMPTS", "serve_once", "load_key", "OWN_AGENTS", "log",
+          "INBOUND_LOG_CHARS")}
+_REAL_INBOUND = _REAL["INBOUND_LOG_CHARS"]
 
 
 # ------------------------------------------------------------- test harness
@@ -426,6 +428,49 @@ def test_actor_flag_restricts_process_to_one_agent():
         sys.argv = saved_argv
         for k, v in _REAL.items():
             setattr(P, k, v)
+
+
+def test_multiline_answer_stays_one_transcript_line():
+    """Markdown answers contain newlines. Unflattened, one transcript entry spans
+    many log lines, so grep/tail shows only the heading and a healthy agent reads
+    as having answered with 33 chars."""
+    body = ("[a2a] REPLY from omega-man (agentverse): task abc123 received. "
+            "ANSWER: # Routing Order Summary\n\n1. **agentverse** first\n"
+            "2. then e2a\n3. then agentmail\n\nTradeoff: latency vs reach.")
+    h = Harness(items=[item("u10", body)], brain=lambda p, a=None: "unused")
+    h.arm()
+    captured = []
+    P.log = lambda m: captured.append(m)
+    try:
+        h.cycle()
+    finally:
+        P.log = _REAL["log"]
+    inbound = [m for m in captured if "INBOUND from" in m]
+    check("inbound reply is transcribed exactly once", len(inbound) == 1, f"n={len(inbound)}")
+    if inbound:
+        check("transcript entry is a single line (newlines flattened)",
+              "\n" not in inbound[0], repr(inbound[0][:120]))
+        check("flattened entry keeps the answer body, not just the heading",
+              "agentmail" in inbound[0] and "Tradeoff" in inbound[0], inbound[0][:200])
+        check("flattened entry preserves the sender address",
+              "agent1jason-parser" in inbound[0], inbound[0][:120])
+
+
+def test_transcript_respects_length_cap():
+    body = "[a2a] REPLY from omega-man (agentverse): task x received. ANSWER: " + ("y" * 5000)
+    h = Harness(items=[item("u11", body)], brain=lambda p, a=None: "unused")
+    h.arm()
+    captured = []
+    P.INBOUND_LOG_CHARS = 300
+    P.log = lambda m: captured.append(m)
+    try:
+        h.cycle()
+    finally:
+        P.log = _REAL["log"]
+        P.INBOUND_LOG_CHARS = _REAL_INBOUND
+    inbound = [m for m in captured if "INBOUND from" in m]
+    check("transcript entry is capped (log cannot be flooded by one answer)",
+          inbound and len(inbound[0]) < 500, f"len={len(inbound[0]) if inbound else 0}")
 
 
 def test_mailbox_read_failure_is_not_fatal():
