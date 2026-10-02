@@ -20,7 +20,7 @@ CONFIG (env, none committed) -------------------------------
   A2A_OWN_AGENTS          comma list of agent names THIS machine acts for.
                           default "omega-man". For the 4 LC/BC:
                           "my-liberclaw,my-betterclaw,omega-liberclaw,omega-betterclaw"
-  A2A_SEED_PREFIX         default "a2a-omega-e2a-fleet-" (identity seed = prefix+name)
+  A2A_SEED_PREFIX         default "a2a-myfleet-" (identity seed = prefix+name)
   A2A_POLL_SEC            mailbox poll interval, default 2
   A2A_ANSWER_BASE         (optional) OpenAI-compatible /chat/completions base URL
   A2A_ANSWER_KEY          (optional) Bearer key for that endpoint
@@ -32,7 +32,8 @@ CONFIG (env, none committed) -------------------------------
                           Stops one undeliverable message from blocking a mailbox.
   A2A_REPLY_FALLBACK      where to send an answer when the envelope's sender is
                           not a registered Agentverse agent (reply 404s). A fleet
-                          name or an agent1... address. Default "jason-parser";
+                          name or an agent1... address. Default empty, which
+                          disables redirection;
                           empty disables redirection.
 
 Behaviour: every [a2a] message gets a REAL answer, never a bare acknowledgement.
@@ -62,10 +63,13 @@ import urllib.error
 from datetime import datetime
 
 BASE = os.environ.get("A2A_AGENTVERSE_BASE", "https://agentverse.ai").rstrip("/")
-SEED_PREFIX = os.environ.get("A2A_SEED_PREFIX", "a2a-omega-e2a-fleet-")
+SEED_PREFIX = os.environ.get("A2A_SEED_PREFIX", "a2a-myfleet-")
 POLL_SEC = int(os.environ.get("A2A_POLL_SEC", "2"))
 KEY_FILE = os.environ.get("A2A_AGENTVERSE_ENV", "/opt/omega/workspace/notes/agentverse.env")
-OWN_AGENTS = [a.strip() for a in os.environ.get("A2A_OWN_AGENTS", "omega-man").split(",") if a.strip()]
+# No default: an installer must name the agents this machine owns. Defaulting
+# to someone else's agent name is how a fresh install starts draining a mailbox
+# it does not own.
+OWN_AGENTS = [a.strip() for a in os.environ.get("A2A_OWN_AGENTS", "").split(",") if a.strip()]
 STATE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -124,8 +128,7 @@ def send_reply(key, as_agent, dst_addr, text):
 # Fleet-wide roster for batch send (a2a-omega-mesh broadcast semantics:
 # one logical message, shared batch id, fanned out to every other agent).
 FLEET = [a.strip() for a in os.environ.get(
-    "A2A_FLEET",
-    "jason-parser,omega-man,my-liberclaw,my-betterclaw,omega-liberclaw,omega-betterclaw"
+    "A2A_FLEET", "agent-one,agent-two,agent-three"
 ).split(",") if a.strip()]
 
 LEDGER_DIR = os.environ.get("A2A_LEDGER_DIR",
@@ -234,7 +237,9 @@ def llm_answer(prompt, agent=None):
     msgs = []
     system = prof.get("system", "")
     if agent:
-        ctx = (f"You are {agent}, a whitehat security agent on the jason-parser fleet. "
+        fleet_label = os.environ.get("A2A_FLEET_LABEL", "this agent fleet")
+        role = os.environ.get("A2A_AGENT_ROLE", "an autonomous agent")
+        ctx = (f"You are {agent}, {role} on {fleet_label}. "
                f"Answer as {agent}. Your live work ledger: {json.dumps(load_ledger(agent))}")
         system = (ctx + "\n" + system).strip() if system else ctx
     if system:
@@ -306,7 +311,9 @@ def _ack(name, key, me_addr, uid):
         pass
 
 
-REPLY_FALLBACK = os.environ.get("A2A_REPLY_FALLBACK", "jason-parser")
+# Empty by default: disabled. Pointing this at a name by default would send
+# every undeliverable answer from someone else's install into that mailbox.
+REPLY_FALLBACK = os.environ.get("A2A_REPLY_FALLBACK", "")
 
 # How much of an inbound reply is transcribed to the log (flattened to one line).
 INBOUND_LOG_CHARS = int(os.environ.get("A2A_INBOUND_LOG_CHARS", "1200"))
@@ -489,7 +496,7 @@ def main():
         log(f"ERROR: uagents SDK missing ({e}). Run: pip install uagents uagents_core")
         return 2
 
-    # One-shot OUTBOUND commands (ANY agent can use these - not just jason):
+    # One-shot OUTBOUND commands (any agent can use these, not just the owner):
     #   python omega_poller.py --send <as_name> <target> "<text>"
     #       sign as <as_name> (must be in OWN_AGENTS), deliver to <target>'s mailbox
     #   python omega_poller.py --batch "<text>"
@@ -549,6 +556,11 @@ def main():
                 OWN_AGENTS = [want]
                 log(f"__actor={want}: this process answers for {want} only")
 
+    if not OWN_AGENTS:
+        print("refusing to start: A2A_OWN_AGENTS is empty. Name the agents this "
+              "machine owns, e.g. A2A_OWN_AGENTS=agent-one, or pass __actor=<name>.",
+              file=sys.stderr)
+        return 2
     log(f"omega poller starting: acting for {OWN_AGENTS}, poll every {POLL_SEC}s")
     once = "--once" in sys.argv
     while True:

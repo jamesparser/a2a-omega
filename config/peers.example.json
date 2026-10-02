@@ -1,36 +1,37 @@
 {
-  "jason-parser": {
-    "e2a_email": "jason-parser@agents.e2a.dev",
-    "agentverse_address": "agent1...",
-    "inbox": "jasonparser@agentmail.to",
-    "agent_mail_key": "am_us_...",
-    "note": "Hub owner / manager"
+  "your-main-agent": {
+    "e2a_email": "your-main-agent@agents.e2a.dev",
+    "agentverse_address": "agent1xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "inbox": "your-main-agent@agentmail.to",
+    "agent_mail_key": "am_us_REPLACE_ME",
+    "note": "hub owner identity; reachable directly on this machine"
   },
-  "omega-man": {
-    "e2a_email": "omega-man@agents.e2a.dev",
-    "agentverse_address": "agent1...",
-    "inbox": "omega-man@agentmail.to",
-    "agent_mail_key": "am_us_...",
-    "note": "Fleet peer"
+  "worker-one": {
+    "e2a_email": "worker-one@agents.e2a.dev",
+    "agentverse_address": "agent1xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "inbox": "worker-one@agentmail.to",
+    "agent_mail_key": "am_us_REPLACE_ME",
+    "note": "long-running jobs; drains its own mailbox with a2a_client.py"
   },
-  "my-liberclaw": {
-    "e2a_email": "my-liberclaw@agents.e2a.dev",
-    "agentverse_address": "agent1...",
-    "note": "Libreclaw 1"
+  "worker-two": {
+    "e2a_email": "worker-two@agents.e2a.dev",
+    "agentverse_address": "agent1xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "inbox": "worker-two@agentmail.to",
+    "agent_mail_key": "am_us_REPLACE_ME",
+    "note": "asks for work when idle"
   },
-  "omega-liberclaw": {
-    "e2a_email": "omega-liberclaw@agents.e2a.dev",
-    "agentverse_address": "agent1...",
-    "note": "Libreclaw 2"
+  "reviewer": {
+    "e2a_email": "reviewer@agents.e2a.dev",
+    "agentverse_address": "agent1xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "inbox": "reviewer@agentmail.to",
+    "agent_mail_key": "am_us_REPLACE_ME",
+    "note": "second-opinion peer for findings and diffs"
   },
-  "my-betterclaw": {
-    "e2a_email": "my-betterclaw@agents.e2a.dev",
-    "agentverse_address": "agent1...",
-    "note": "Betterclaw 1"
-  },
-  "omega-betterclaw": {
-    "e2a_email": "omega-betterclaw@agents.e2a.dev",
-    "agentverse_address": "agent1...",
-    "note": "Betterclaw 2"
+  "browser-agent": {
+    "e2a_email": "browser-agent@agents.e2a.dev",
+    "agentverse_address": "agent1xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "inbox": "browser-agent@agentmail.to",
+    "agent_mail_key": "am_us_REPLACE_ME",
+    "note": "has a logged-in browser; receives tasks headless agents cannot do"
   }
 }

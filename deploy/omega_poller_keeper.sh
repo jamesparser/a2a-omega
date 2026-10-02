@@ -19,7 +19,12 @@
 #   systemctl daemon-reload && systemctl enable --now omega-a2a-poller.service
 set -u
 
-AGENTS="${A2A_KEEPER_AGENTS:-jason-parser omega-man my-liberclaw my-betterclaw omega-liberclaw omega-betterclaw}"
+# Fleet roster. Defaults to generic placeholders so a fresh install cannot
+# start pollers for someone else's agents. Set A2A_KEEPER_AGENTS (or put it in
+# /workspace/notes/fleet.env, which is gitignored) for your own fleet.
+FLEET_ENV="${A2A_FLEET_ENV:-/workspace/notes/fleet.env}"
+[ -f "$FLEET_ENV" ] && . "$FLEET_ENV"
+AGENTS="${A2A_KEEPER_AGENTS:-agent-one agent-two agent-three}"
 CONTAINER="${A2A_KEEPER_CONTAINER:-omega}"
 LOG=/var/log/omega-a2a-poller.log
 STARTER=/workspace/run_poller_one.sh

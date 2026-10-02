@@ -25,18 +25,21 @@ os.environ.setdefault("A2A_AGENTVERSE_ENV", "/workspace/notes/agentverse.env")
 sys.path.insert(0, "/workspace")
 import omega_poller as P  # noqa: E402
 
-SENDER = os.environ.get("A2A_VERIFY_SENDER", "jason-parser")
+SENDER = os.environ.get("A2A_VERIFY_SENDER", "agent-one")
 
 # Real questions. None match looks_like_status(), so each must be answered by
 # that agent's own brain/persona - a bare ACK or a ledger dump fails the check.
+# Keyed by YOUR agent names. Override with A2A_VERIFY_AGENTS="a,b,c" to reuse
+# one question for every agent in your own fleet.
 QUESTIONS = {
-    "omega-man": "Which single control would you add first to harden a Docker host that runs untrusted agent code, and why that one?",
-    "my-liberclaw": "What is the first misconfiguration you look for in an accidentally exposed S3 bucket?",
-    "my-betterclaw": "Which TLS cipher suite would you recommend for a public API today, and what is the tradeoff?",
-    "omega-liberclaw": "A webhook endpoint silently stops receiving events. What do you check first and second?",
-    "omega-betterclaw": "Name the dependency-audit signal you trust most and explain why.",
-    "jason-parser": "Summarise the current routing order the a2a hub uses for outbound tasks.",
+    "agent-one": "Which single control would you add first to harden a Docker host that runs untrusted agent code, and why that one?",
+    "agent-two": "What is the first misconfiguration you look for in an accidentally exposed S3 bucket?",
+    "agent-three": "Which TLS cipher suite would you recommend for a public API today, and what is the tradeoff?",
 }
+_override = [a.strip() for a in os.environ.get("A2A_VERIFY_AGENTS", "").split(",") if a.strip()]
+if _override:
+    _q = list(QUESTIONS.values())
+    QUESTIONS = {a: _q[i % len(_q)] for i, a in enumerate(_override)}
 
 # Phrases that would indicate an acknowledgement rather than an answer.
 ACK_ONLY = ("received.", "received ", "ack from", "no answer", "unavailable")
@@ -90,7 +93,7 @@ def actor_log_answer(agent, since):
 def read_transcript():
     """Replies already swept from the mailbox by the SENDER's own actor.
 
-    The jason-parser actor polls every 2s and transcribes every inbound reply to
+    The sender actor polls every 2s and transcribes every inbound reply to
     its log before ACKing it. Reading that log is the non-racy way to score
     answers: polling the mailbox directly loses a race with the actor and
     reports a healthy agent as silent.

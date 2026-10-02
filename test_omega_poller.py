@@ -143,7 +143,7 @@ class Harness:
         P.serve_once("omega-man", "k")
 
 
-def item(uid, text, sender="agent1jason-parser"):
+def item(uid, text, sender="agent1agent-one"):
     return {"uuid": uid, "envelope": {"sender": sender, "payload": text}}
 
 
@@ -193,7 +193,7 @@ def test_llm_answer_callable_with_agent():
 
 def test_question_gets_real_answer_not_ack():
     h = Harness(
-        items=[item("u1", "[a2a] task from=jason-parser: which cipher would you pick for a TLS terminator and why?")],
+        items=[item("u1", "[a2a] task from=agent-one: which cipher would you pick for a TLS terminator and why?")],
         brain=lambda prompt, agent=None: f"As {agent}: I'd pick ChaCha20-Poly1305 for mobile, AES-GCM elsewhere.",
     )
     h.arm()
@@ -345,12 +345,12 @@ def test_unregistered_sender_404_is_redirected_not_dropped():
         return (404, {"detail": "Target agent not found"}) if attempts["n"] == 1 else (202, {})
 
     P.send_reply = sender_404_then_ok
-    P.REPLY_FALLBACK = "jason-parser"
+    P.REPLY_FALLBACK = "agent-one"
     h.cycle()
     check("answer is retried against the fallback address", attempts["n"] == 2,
           f"attempts={attempts['n']}")
-    check("fallback destination is the resolved jason-parser identity",
-          delivered[-1] == P.identity("jason-parser").address, f"delivered={delivered}")
+    check("fallback destination is the resolved agent-one identity",
+          delivered[-1] == P.identity("agent-one").address, f"delivered={delivered}")
     check("message marked seen after the redirected answer",
           "u7" in P.load_seen("omega-man"), f"seen={sorted(P.load_seen('omega-man'))}")
     check("envelope ACKed after the redirected answer", "u7" in h.deleted, f"deleted={h.deleted}")
@@ -453,7 +453,7 @@ def test_multiline_answer_stays_one_transcript_line():
         check("flattened entry keeps the answer body, not just the heading",
               "agentmail" in inbound[0] and "Tradeoff" in inbound[0], inbound[0][:200])
         check("flattened entry preserves the sender address",
-              "agent1jason-parser" in inbound[0], inbound[0][:120])
+              "agent1agent-one" in inbound[0], inbound[0][:120])
 
 
 def test_transcript_respects_length_cap():

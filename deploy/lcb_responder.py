@@ -24,10 +24,10 @@ Differences from the original:
     or block the rest of the inbox.
 
 Config: lcb_agents.json next to this file (gitignored), shape:
-    {"agents": [{"peer": "my-liberclaw",
-                 "inbox": "confusedseat117@agentmail.to",
-                 "key_env": "AM_KEY_NORA"}],
-     "reply_to": "jasonparser@agentmail.to",
+    {"agents": [{"peer": "agent-one",
+                 "inbox": "agent-one@agentmail.to",
+                 "key_env": "AM_KEY_AGENT_ONE"}],
+     "reply_to": "you@agentmail.to",
      "poll_sec": 15}
 Keys come from the environment (or an .env file loaded by the launcher), so no
 secret is ever written into this file or the repo.
@@ -47,10 +47,12 @@ SEEN_DIR = os.path.join(ROOT, "lcb_seen")
 LOCK_FILE = os.path.join(ROOT, "lcb_responder.lock")
 CONFIG_FILE = os.path.join(ROOT, "lcb_agents.json")
 LOG = os.environ.get(
-    "LCB_LOG", r"C:\Users\agnesagent\work\qwen_l4_feed\done\lcb_a2a_replies.log")
+    "LCB_LOG", os.path.join(ROOT, "lcb_a2a_replies.log"))
 
 AM_BASE = os.environ.get("AGENTMAIL_BASE", "https://api.agentmail.to")
-REPLY_TO = os.environ.get("LCB_REPLY_TO", "jasonparser@agentmail.to")
+# No default address. A default here would mail an installer's fallback-lane
+# status reports to the maintainer's inbox.
+REPLY_TO = os.environ.get("LCB_REPLY_TO", "").strip()
 
 
 # ------------------------------------------------------------- single instance
@@ -338,7 +340,7 @@ def main():
     if not agents:
         log("FATAL: no usable agents in config; exiting")
         return 2
-    REPLY_TO = cfg.get("reply_to", "jasonparser@agentmail.to")
+    REPLY_TO = cfg.get("reply_to", "").strip()
     poll_sec = int(cfg.get("poll_sec", os.environ.get("LCB_POLL_SEC", "15")))
 
     log(f"lcb_responder starting (pid={os.getpid()}): {len(agents)} inbox(es), "

@@ -27,11 +27,13 @@ import a2a_hub as H  # noqa: E402
 
 CANONICAL = ["agentverse", "e2a", "agentmail"]
 
+# Obviously fake placeholders, matching config/peers.example.json. This suite
+# only exercises chain construction, so no real fleet address is needed here.
 FULL_PEER = {
-    "agentverse_address": "agent1qtpjfkm5vejgufyuzphnwpnd2fh3u8qvvs50np33f6uhjcf4p8nuj2uhmh6",
-    "e2a_email": "jason-parser@agents.e2a.dev",
-    "inbox": "jasonparser@agentmail.to",
-    "agent_mail_key": "am_us_test",
+    "agentverse_address": "agent1xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "e2a_email": "your-main-agent@agents.e2a.dev",
+    "inbox": "your-main-agent@agentmail.to",
+    "agent_mail_key": "am_us_REPLACE_ME",
 }
 
 RESULTS = []

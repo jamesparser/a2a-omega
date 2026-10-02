@@ -2,6 +2,16 @@
 
 **Six AI agents that talk to each other over Agentverse mailboxes and e2a email, with an opt-in daily transcript to the hub owner.** Built for BGI HyperSprint (team 58, JasonParser Security) and real-world security-research coordination.
 
+> ## This repo is frozen
+>
+> Development continues in **[`jamesparser/a2a-omega-mesh`](https://github.com/jamesparser/a2a-omega-mesh)**,
+> which is now the active repo and the Decentralize AI Hackathon entry. The
+> answering-loop fixes recorded below were ported there on 2026-10-02, and
+> everything after that (removal of hardcoded fleet identities, `CHANGELOG.md`,
+> the v2 roadmap) landed there first and will not be back-ported.
+>
+> Kept public for history. Install the mesh repo, not this one.
+
 ## Status (2026-10-02)
 
 | Piece | State |
@@ -9,7 +19,7 @@
 | **Agentverse** | **Primary.** 6 mailbox agents + signed-envelope submit. Mesh 30/30 pong (p50 ~9s). |
 | **e2a.dev** | **Primary.** 6 fleet inboxes (`*@agents.e2a.dev`). Mesh 30/30 pong (p50 ~8s). Free plan = 20 msgs/day. |
 | **Answering loop** | **Live.** All 6 agents poll and return substantive answers — verified end to end 6/6 by `deploy/verify_answers.py`. |
-| Hub | JSON-RPC `SendMessage` / `tasks` / `agent-card`; chain `agentverse → e2a → agentmail`; signs as the registered `jason-parser` identity. |
+| Hub | JSON-RPC `SendMessage` / `tasks` / `agent-card`; chain `agentverse → e2a → agentmail`; signs as whichever registered identity the operator configures. There is no default. |
 | AgentMail | Last-resort fallback only. `deploy/lcb_responder.py` relays it to a real brain instead of acknowledging. |
 | MailSlurp | Removed 2026-09-25. Not in the chain. |
 
@@ -28,14 +38,14 @@ omega-liberclaw ─────► omega-betterclaw
 
 ## Fleet (6 identities)
 
-| Name | e2a | Agentverse mailbox |
-|---|---|---|
-| jason-parser | jason-parser@agents.e2a.dev | `a2a-omega-e2a-fleet-jason-parser` |
-| omega-man | omega-man@agents.e2a.dev | `a2a-omega-e2a-fleet-omega-man` |
-| my-liberclaw | my-liberclaw@agents.e2a.dev | `a2a-omega-e2a-fleet-my-liberclaw` |
-| omega-liberclaw | omega-liberclaw@agents.e2a.dev | `a2a-omega-e2a-fleet-omega-liberclaw` |
-| my-betterclaw | my-betterclaw@agents.e2a.dev | `a2a-omega-e2a-fleet-my-betterclaw` |
-| omega-betterclaw | omega-betterclaw@agents.e2a.dev | `a2a-omega-e2a-fleet-omega-betterclaw` |
+Six agents, each with its own e2a inbox and Agentverse mailbox. Names and
+addresses are **redacted here on purpose**, as are the identity seeds.
+
+An earlier revision of this table published the literal `A2A_SEED_PREFIX` plus
+every agent name, which is the seed string each identity is derived from
+(`Identity.from_seed(SEED_PREFIX + name)`). A seed is a signing key: anyone with
+it can derive that agent's address and sign envelopes as it. Seeds now live only
+in the gitignored local config; see `config/fleet.env.example` in the mesh repo.
 
 e2a free plan: 3 agents per account (two accounts). Agentverse keys stay local (`agentverse.env`), never in git.
 
@@ -70,26 +80,34 @@ e2a needs a browser-like `User-Agent` (Cloudflare 1010 otherwise). Peers carry `
 
 ### The hub must sign as a registered identity
 
-`a2a_agentverse.py` signs outbound envelopes with `A2A_AGENTVERSE_SEED`, which
-defaults to `A2A_SEED_PREFIX + A2A_HUB_IDENTITY` (= the `jason-parser` fleet
-identity). **Do not point it at an ad-hoc seed.** An unregistered signing
-identity has no mailbox, so every agent that tries to answer a hub-sent task
-gets `404 Target agent not found` and the answer is silently lost. The poller
-defends against this too: on a 404 it redirects the answer to
-`A2A_REPLY_FALLBACK` (default `jason-parser`) instead of dropping it.
+`a2a_agentverse.py` signs outbound envelopes with `A2A_AGENTVERSE_SEED`, or with
+`A2A_SEED_PREFIX + A2A_HUB_IDENTITY` when no explicit seed is given. **There is
+no default identity**: with neither set, `av_send` refuses to sign and returns an
+error naming the variables to set. That is deliberate. A previous revision
+defaulted to the maintainer's registered fleet agent, which meant a fresh install
+signed as someone else and pulled their replies into its own mailbox.
+
+**Do not point it at an ad-hoc seed either.** An unregistered signing identity
+has no mailbox, so every agent that tries to answer a hub-sent task gets
+`404 Target agent not found` and the answer is silently lost. Use a real
+registered identity of your own. The poller defends against the 404 case too: it
+redirects the answer to `A2A_REPLY_FALLBACK` instead of dropping it, and that
+variable defaults to empty (disabled) rather than to anyone's mailbox.
 
 ## Quick start
 
 ```bash
+# Prefer the active repo: jamesparser/a2a-omega-mesh. This one is frozen.
 git clone https://github.com/jamesparser/a2a-omega
 cd a2a-omega && cp .env.example .env && nano .env
+cp config/fleet.env.example notes/fleet.env && nano notes/fleet.env
 cp config/peers.example.json config/peers.json
 python a2a_hub.py   # default port 8787
 
 curl -X POST http://localhost:8787/a2a/v1 \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"SendMessage","peer":"omega-man",
-       "params":{"message":{"parts":[{"text":"[a2a] hello"}],"sender":"jasonparser"}}}'
+  -d '{"jsonrpc":"2.0","id":1,"method":"SendMessage","peer":"agent-two",
+       "params":{"message":{"parts":[{"text":"[a2a] hello"}],"sender":"agent-one"}}}'
 ```
 
 ## Add another agent
@@ -111,10 +129,10 @@ One process per agent, each with its own brain slot, persona and ledger:
 
 ```bash
 A2A_AGENTVERSE_ENV=/path/agentverse.env \
-A2A_OWN_AGENTS=omega-man \
+A2A_OWN_AGENTS=agent-one \
 A2A_ANSWER_BASE=http://127.0.0.1:4000/v1 \
 A2A_ANSWER_KEY=... A2A_ANSWER_MODEL=... \
-python3 omega_poller.py __actor=omega-man
+python3 omega_poller.py __actor=agent-one
 ```
 
 Every `[a2a]` message gets a real answer:

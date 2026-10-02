@@ -14,8 +14,10 @@
 #>
 $ErrorActionPreference = "Continue"
 
-$dir = "C:\Users\agnesagent\work\a2a"
-$FLEET = @("jason-parser","omega-man","my-liberclaw","my-betterclaw","omega-liberclaw","omega-betterclaw")
+# Set these for your own machine/fleet, e.g.
+#   $env:A2A_DIR = "C:\work\a2a"; $env:A2A_FLEET = "agent-one,agent-two"
+$dir = if ($env:A2A_DIR) { $env:A2A_DIR } else { $PSScriptRoot }
+$FLEET = if ($env:A2A_FLEET) { $env:A2A_FLEET.Split(",") } else { @("agent-one","agent-two","agent-three") }
 
 function Sec([string]$t) { Write-Output ""; Write-Output "=== $t ===" }
 
@@ -83,7 +85,7 @@ foreach ($lg in @(@("hub.err.log",6), @("hub_watchdog.log",5), @("lcb_watchdog.l
   if (Test-Path $p) { Get-Content $p -Tail $lg[1] -ErrorAction SilentlyContinue | ForEach-Object { Write-Output ("    " + $_) } }
   else { Write-Output "    (absent)" }
 }
-$rl = "C:\Users\agnesagent\work\qwen_l4_feed\done\lcb_a2a_replies.log"
+$rl = if ($env:LCB_LOG) { $env:LCB_LOG } else { Join-Path $dir "lcb_a2a_replies.log" }
 Write-Output "  --- lcb_a2a_replies.log ---"
 if (Test-Path $rl) { Get-Content $rl -Tail 6 -ErrorAction SilentlyContinue | ForEach-Object { Write-Output ("    " + $_) } } else { Write-Output "    (absent)" }
 

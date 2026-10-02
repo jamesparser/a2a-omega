@@ -8,6 +8,10 @@
 agent="$1"
 [ -n "$agent" ] || { echo 'usage: run_poller_one.sh <agent>'; exit 2; }
 
+# Operator-local fleet config (gitignored). Holds the real roster, seed prefix
+# and reply-redirect target, so none of them live in the public repo.
+[ -f "${A2A_FLEET_ENV:-/workspace/notes/fleet.env}" ] && . "${A2A_FLEET_ENV:-/workspace/notes/fleet.env}"
+
 export A2A_AGENTVERSE_ENV="${A2A_AGENTVERSE_ENV:-/workspace/notes/agentverse.env}"
 export A2A_OWN_AGENTS="$agent"
 export A2A_LEDGER_DIR="${A2A_LEDGER_DIR:-/workspace/notes/ledger}"
@@ -15,7 +19,7 @@ export A2A_POLL_SEC="${A2A_POLL_SEC:-2}"
 
 # Never lose an answer: if the envelope's sender is not a registered Agentverse
 # agent the reply would 404, so redirect it to the hub owner's mailbox.
-export A2A_REPLY_FALLBACK="${A2A_REPLY_FALLBACK:-jason-parser}"
+export A2A_REPLY_FALLBACK="${A2A_REPLY_FALLBACK:-}"
 # Bound retries so one undeliverable message cannot block the mailbox forever.
 export A2A_MAX_ATTEMPTS="${A2A_MAX_ATTEMPTS:-3}"
 

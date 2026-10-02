@@ -248,7 +248,7 @@ def _send_e2a(p, entry):
     to_email = p.get("e2a_email", "")
     if not from_email:
         # default: hub owner identity named in A2A_HUB_SENDER_INBOX's local part
-        sender = HUB_SENDER_INBOX.split("@")[0] if HUB_SENDER_INBOX else "jason-parser"
+        sender = HUB_SENDER_INBOX.split("@")[0] if HUB_SENDER_INBOX else "hub"
         from_email = f"{sender}@agents.e2a.dev" if "@" not in sender else sender
     text = entry if isinstance(entry, str) else json.dumps(entry, default=str)
     return mod.e2a_send(from_email, to_email, f"[a2a] {entry.get('peer', to_email) if isinstance(entry, dict) else to_email}", text)

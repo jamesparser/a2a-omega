@@ -48,7 +48,7 @@ class Fake:
         R.SEEN_DIR = tempfile.mkdtemp(prefix="lcb-seen-")
         R.LOCK_FILE = os.path.join(tempfile.mkdtemp(prefix="lcb-lock-"), "r.lock")
         R.LOG = os.path.join(tempfile.mkdtemp(prefix="lcb-log-"), "r.log")
-        R.REPLY_TO = "jasonparser@agentmail.to"
+        R.REPLY_TO = "you@agentmail.to"
         R.am_get = lambda inbox, key: list(self.msgs)
         R.log = lambda m: self.loglines.append(m)
 
