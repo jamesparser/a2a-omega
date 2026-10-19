@@ -35,7 +35,12 @@ def _keys():
     if joined:
         keys.extend(k.strip() for k in joined.split(",") if k.strip())
     # optional: E2A_KEY_FILES=path1:path2 with E2A_API_KEY=... lines
-    for path in filter(None, os.environ.get("E2A_KEY_FILES", "").split(os.pathsep)):
+    # Accept ';' (os.pathsep on Windows) AND ':' (legacy Unix-style list).
+    # A ':' that begins a Windows drive-letter path (C:/...) must NOT split,
+    # hence the (?![/\\]) guard; everything else after ';' or ':' is a new path.
+    import re as _re
+    _key_files = os.environ.get("E2A_KEY_FILES", "")
+    for path in filter(None, _re.split(r"[;:](?![/\\])\s*", _key_files)):
         try:
             with open(path, encoding="utf-8") as f:
                 for line in f:

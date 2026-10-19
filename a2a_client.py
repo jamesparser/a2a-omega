@@ -2,12 +2,17 @@
 
 Usage:
   python a2a_client.py poll          # read + print new [a2a] tasks for ME
+  python a2a_client.py check         # cron mode: exit 1 if new tasks, else 0
   python a2a_client.py send <peer> "message"   # send a task via the hub
+  python a2a_client.py broadcast "message"     # fan out to every other peer
 
 All configuration comes from environment variables (see .env.example):
   A2A_ME_INBOX    your AgentMail inbox, e.g. myagent@example.com
   A2A_AGENTMAIL_API_KEY   API key for your inbox (or A2A_VAULT_SITE if you use a vault)
   A2A_HUB         base URL of the hub, e.g. http://100.x.y.z:8787
+
+Optional: `check` is for operators who want a shell exit code. Existing agent
+pings already cover the usual 5 minute poll; this does not replace them.
 """
 import json
 import os
@@ -77,6 +82,29 @@ def a2a_send(peer, text):
         return {"ERROR": str(e)}
 
 
+def a2a_broadcast(text):
+    payload = {
+        "jsonrpc": "2.0",
+        "id": f"bc-{datetime.now().strftime('%H%M%S')}",
+        "method": "Broadcast",
+        "peer": "*",
+        "params": {"message": {
+            "messageId": f"bc-{datetime.now().strftime('%H%M%S')}",
+            "role": "ROLE_USER",
+            "parts": [{"text": text}],
+            "sender": ME_INBOX.split("@")[0] if ME_INBOX else "unknown-agent",
+        }},
+    }
+    req = urllib.request.Request(
+        HUB + "/a2a/v1",
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"})
+    try:
+        return json.loads(urllib.request.urlopen(req, timeout=30).read())
+    except Exception as e:  # noqa: BLE001
+        return {"ERROR": str(e)}
+
+
 def cmd_poll(seen_file=None):
     """Read my inbox, print new [a2a] tasks I haven't seen yet."""
     seen = set()
@@ -102,18 +130,43 @@ def cmd_poll(seen_file=None):
                 f.write(mid + "\n")
     if not new:
         print(f"No new {A2A_TAG} tasks in {ME_INBOX}")
+    return new
+
+
+def cmd_check(seen_file=None):
+    """Cron-friendly: print a one-line count. Exit 1 if there is new work, else 0."""
+    new = cmd_poll(seen_file=seen_file)
+    n = len(new or [])
+    if n:
+        print(f"NEW_TASKS={n}")
+        return 1
+    print("NEW_TASKS=0")
+    return 0
 
 
 def main():
     if len(sys.argv) < 2:
         print(__doc__)
         return
+    seen = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".a2a_seen")
     if sys.argv[1] == "poll":
-        cmd_poll(seen_file=os.path.join(os.path.dirname(os.path.abspath(__file__)), ".a2a_seen"))
+        cmd_poll(seen_file=seen)
+    elif sys.argv[1] == "check":
+        raise SystemExit(cmd_check(seen_file=seen))
     elif sys.argv[1] == "send":
         peer, text = sys.argv[2], " ".join(sys.argv[3:])
         r = a2a_send(peer, text)
         print("sent OK" if ("task" in r or "result" in r) else f"ERROR: {r}")
+    elif sys.argv[1] == "broadcast":
+        text = " ".join(sys.argv[2:])
+        r = a2a_broadcast(text)
+        bc = (r.get("result") or {}).get("broadcast") or r
+        if "ERROR" in r:
+            print(f"ERROR: {r}")
+        else:
+            print(f"broadcast OK id={bc.get('id')} targets={bc.get('target_count')}")
+            for t in bc.get("targets") or []:
+                print(f"  {t.get('peer')}: {t.get('id')}")
     else:
         print(__doc__)
 

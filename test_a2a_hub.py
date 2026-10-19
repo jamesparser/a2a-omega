@@ -47,7 +47,7 @@ def check(name, cond, detail=""):
 def with_keys(fn):
     """Run fn with agentverse + e2a credentials present."""
     saved = (H.AGENTVERSE_API_KEY, H.AGENTVERSE_KEY_SITE, H.E2A_API_KEYS, H.A2A_TRANSPORT)
-    H.AGENTVERSE_API_KEY = "test-agentverse-key"
+    H.AGENTVERSE_API_KEY = "REPLACE_ME"
     H.AGENTVERSE_KEY_SITE = ""
     H.E2A_API_KEYS = "test-e2a-key"
     H.A2A_TRANSPORT = "agentverse"
@@ -110,11 +110,11 @@ def test_unusable_transports_are_dropped_in_order():
 
         # agentverse address but no hub key
         H.AGENTVERSE_API_KEY = ""
-        H.AGENTVERSE_KEY_SITE = ""
+        REPLACE_ME = ""
         c = H._transport_chain(dict(FULL_PEER))
         check("agentverse dropped when the hub has no Agentverse key",
               c == ["e2a", "agentmail"], f"got {c}")
-        H.AGENTVERSE_API_KEY = "test-agentverse-key"
+        H.AGENTVERSE_API_KEY = "REPLACE_ME"
 
         # no e2a keys
         H.E2A_API_KEYS = ""

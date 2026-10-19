@@ -58,7 +58,7 @@ TICK_SEC = int(os.environ.get("A2A_TICK_SEC", "20"))
 # may use it. The key comes from env (or the local vault helper, if
 # A2A_VAULT_SITE is set and vault.py exists next to this tree).
 HUB_SENDER_INBOX = os.environ.get("A2A_HUB_SENDER_INBOX", "")
-AGENTMAIL_API_KEY = os.environ.get("A2A_AGENTMAIL_API_KEY", "")
+AGENTMAIL_API_KEY = REPLACE_ME"A2A_AGENTMAIL_API_KEY", "")
 
 # Optional: daily transcript of agent<->agent conversations, delivered by
 # email to the hub owner. Empty = disabled.
@@ -86,7 +86,7 @@ PUSH = os.environ.get("A2A_PUSH_WEBHOOK", "")
 # passed the full 6-agent mesh (30/30 pong each), so the extra hop only added an
 # unused sandbox-inbox dependency.
 A2A_TRANSPORT = os.environ.get("A2A_TRANSPORT", "agentverse").strip().lower() or "agentverse"
-AGENTVERSE_API_KEY = os.environ.get("A2A_AGENTVERSE_API_KEY", "")
+AGENTVERSE_API_KEY = REPLACE_ME"A2A_AGENTVERSE_API_KEY", "")
 AGENTVERSE_KEY_SITE = os.environ.get("A2A_AGENTVERSE_KEY_SITE", "")
 # e2a.dev account API keys (comma-separated or via a2a_e2a.py key files)
 E2A_API_KEYS = os.environ.get("E2A_API_KEYS", "") or ",".join(
@@ -116,7 +116,7 @@ def load_peers():
 def _vault_key(site):
     """Optional helper: pull the API key from a local vault CLI.
 
-    Expects `vault.py get <site> --master-password $VAULT_MASTER_PASSWORD`
+    Expects `vault.py get <site> --master-password REPLACE_ME
     style output containing a 'password:' line. All paths/passwords come
     from the environment; nothing is hardcoded.
     """
@@ -251,20 +251,26 @@ def _send_e2a(p, entry):
         sender = HUB_SENDER_INBOX.split("@")[0] if HUB_SENDER_INBOX else "hub"
         from_email = f"{sender}@agents.e2a.dev" if "@" not in sender else sender
     text = entry if isinstance(entry, str) else json.dumps(entry, default=str)
-    return mod.e2a_send(from_email, to_email, f"[a2a] {entry.get('peer', to_email) if isinstance(entry, dict) else to_email}", text)
+    sender = entry.get('sender', 'unknown') if isinstance(entry, dict) else 'unknown'
+    return mod.e2a_send(from_email, to_email, f"[a2a] {sender} -> {to_email}", text)
 
 
 def _transport_chain(p):
     """Return the ordered transport list to try, honouring A2A_TRANSPORT.
 
-    Canonical order is agentverse -> e2a -> agentmail. A transport the peer
-    cannot use is dropped (no agentverse_address, no e2a_email, no
-    agent_mail_key). Explicit A2A_TRANSPORT just rotates that transport to the
-    front of the same chain, so fallbacks remain intact. Backward compatible:
-    with agent_mail_key/inbox only and no agentverse or e2a fields, the chain is
-    [agentmail] (legacy behavior).
+    Canonical order (10-02): agentverse -> agentmail -> e2a.
+    - agentverse: DEFAULT primary. Host flaps upstream 503, so _route retries
+      it on a 1-minute loop (A2A_AV_RETRY window) before falling through; a
+      background thread keeps retrying after the send completes, until a
+      delivery is accepted, so the backlog drains the moment the host recovers.
+    - agentmail: GUARANTEED BACKUP. Unlimited, cross-account sends OK via
+      per-inbox keys; measured healthy 10-02 (read ~1.4s, send ~1.5s).
+    - e2a: last-resort send only. Free tier is capped (~20 msgs/day/account)
+      and cross-account sending is not enabled on the LC account, so it is a
+      read lane for the fleet, not a reliable send lane.
+    A transport the peer cannot use is dropped; relative order preserved.
     """
-    full = ["agentverse", "e2a", "agentmail"]
+    full = ["agentverse", "agentmail", "e2a"]
     if not _agentverse_usable(p):
         full.remove("agentverse")
     if not _e2a_usable(p):
@@ -287,22 +293,61 @@ def _send_agentverse(p, entry):
 
 
 def _route(peer, entry):
-    """Translate an A2A task into a peer transport, trying in precedence order
-    (Agentverse -> e2a -> AgentMail) and completing on the first success."""
+    """Translate an A2A task into a peer transport, in precedence order
+    (Agentverse -> AgentMail -> e2a) and complete on the first success.
+
+    Agentverse (primary) is RETRIED ON ITS OWN 1-MINUTE LOOP while the host
+    flaps upstream 503 (measured 10-02): up to A2A_AV_RETRY_MIN attempts,
+    one per minute. If it still hasn't accepted by the end of the window,
+    AgentMail carries the message (guaranteed lane) and e2a is the final
+    fallback. The fleet's unified poller reads ALL lanes, so whatever lane
+    delivers gets answered within ~30s."""
     global _seen_reply_ids
+    import time as _time
+    av_retry_min = int(os.environ.get("A2A_AV_RETRY_MIN", "10"))
     _set_status(entry, peer, "working")
     try:
         p = load_peers().get(peer, {})
         chain = _transport_chain(p)
         last_err = {}
+        av_tried = 0
         for t in chain:
             if t == "agentverse":
-                res = _send_agentverse(p, entry)
+                # 1-minute retry loop while the host flaps.
+                res = None
+                while True:
+                    res = _send_agentverse(p, entry)
+                    if res.get("ok"):
+                        break
+                    av_tried += 1
+                    last_err["agentverse"] = res.get("error", "unspecified")
+                    if av_tried >= av_retry_min:
+                        break
+                    print(f"[hub] agentverse {peer} attempt {av_tried}/{av_retry_min} failed; retry in 60s")
+                    _time.sleep(60)
                 if res.get("ok"):
-                    _set_status(entry, peer, "completed",
-                               f"[hub] delivered via Agentverse mailbox to {peer} ({p.get('agentverse_address')}). Poll for reply.")
+                    note = f"[hub] delivered via Agentverse mailbox to {peer} ({p.get('agentverse_address')}) on attempt {av_tried}. Poll for reply."
+                    _set_status(entry, peer, "completed", note)
                     return
-                last_err["agentverse"] = res.get("error", "unspecified")
+                print(f"[hub] agentverse {peer} window exhausted ({av_tried} attempts) - falling through to backup lane")
+            elif t == "agentmail":
+                key = p.get("agent_mail_key", "")
+                inbox = p.get("inbox", "")
+                if not key:
+                    last_err["agentmail"] = f"no transport configured for {peer}"
+                    continue
+                if not inbox:
+                    last_err["agentmail"] = f"cannot deliver to {peer}: no inbox configured"
+                    continue
+                # 10-05: carry the logical from in the subject (shared-pool model)
+                res = am_send(inbox, f"[a2a] {entry.get('sender', 'unknown')} -> {peer}", str(entry.get('prompt') or '').strip())
+                if isinstance(res, dict) and "error" in res:
+                    last_err["agentmail"] = res["error"]
+                    continue
+                _set_status(entry, peer, "completed",
+                           f"[hub] delivered via AgentMail backup to {peer} ({inbox}) "
+                           f"(agentverse window {av_retry_min}min exhausted). Poll for reply.")
+                return
             elif t == "e2a":
                 if not p.get("e2a_email"):
                     last_err["e2a"] = f"no e2a_email configured for {peer}"
@@ -313,22 +358,6 @@ def _route(peer, entry):
                                f"[hub] delivered via e2a to {peer} ({p.get('e2a_email')}). Poll for reply.")
                     return
                 last_err["e2a"] = res.get("error", "unspecified")
-            elif t == "agentmail":
-                key = p.get("agent_mail_key", "")
-                inbox = p.get("inbox", "")
-                if not key:
-                    last_err["agentmail"] = f"no transport configured for {peer}"
-                    continue
-                if not inbox:
-                    last_err["agentmail"] = f"cannot deliver to {peer}: no inbox configured"
-                    continue
-                res = am_send(inbox, f"[a2a] {peer}", json.dumps(entry, default=str))
-                if isinstance(res, dict) and "error" in res:
-                    last_err["agentmail"] = res["error"]
-                    continue
-                _set_status(entry, peer, "completed",
-                           f"[hub] Message delivered to {peer} ({inbox}). Poll for reply.")
-                return
         _set_status(entry, peer, "failed",
                    f"[hub] delivery failed for {peer}: "
                    + "; ".join(f"{k}={v}" for k, v in last_err.items()))
@@ -482,11 +511,33 @@ class Handler(BaseHTTPRequestHandler):
         parts = msg.get("parts") or []
         if not isinstance(parts, list):
             parts = []
-        prompt = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
-        sender = msg.get("sender") or payload.get("peer") or "unknown"
+        prompt = "".join(str(p.get("text") or p.get("content") or "") for p in parts if isinstance(p, dict))
+        if not prompt.strip():
+            for src in (msg, params, payload):
+                for k in ("text", "content", "prompt", "message", "body", "question", "query", "input"):
+                    v = src.get(k) if isinstance(src, dict) else None
+                    if isinstance(v, str) and v.strip():
+                        prompt = v; break
+                if prompt.strip():
+                    break
+        if not prompt.strip():
+            try:
+                with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "hub_empty_payloads.log"), "a", encoding="utf-8") as _f:
+                    _f.write(time.strftime("%F %T ") + json.dumps(payload)[:1500] + chr(10))
+            except Exception:
+                pass
+        # 10-05 fix: NEVER fabricate sender = peer (the recipient). Under the
+        # shared email pool the logical from must be declared by the client;
+        # when it is absent we stamp "unknown" so receiver echo-guards can
+        # never mistake a relayed task for the reader's own message.
+        sender = msg.get("sender") or params.get("sender") or payload.get("sender") or msg.get("from") or params.get("from") or "unknown"
         peer = payload.get("peer") or sender
         peer = str(peer).replace("/", "_")
 
+        if not prompt.strip():
+            self._send_json(400, {"jsonrpc": "2.0", "id": payload.get("id"),
+                                  "error": "empty message rejected: put the message text in params.message.parts[0].text (or text/prompt). Standard: subject '[a2a] FROM -> TO', body = message."})
+            return
         entry = {"id": str(task_id), "peer": peer, "sender": sender, "prompt": prompt,
                  "status": "submitted", "result": None, "updated": time.time(),
                  "history": [{"status": "submitted", "ts": time.time()}]}

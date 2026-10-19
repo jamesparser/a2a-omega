@@ -1,0 +1,16 @@
+[Unit]
+Description=omega A2A poller keeper (one agentverse poller actor per fleet agent, inside the omega container)
+Documentation=file:///opt/omega/workspace/a2a-omega/deploy/README.md
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=root
+# The keeper is idempotent and exits 0 in steady state; this loop is the timer.
+ExecStart=/bin/bash -c 'while true; do /root/omega_poller_keeper.sh; sleep 10; done'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

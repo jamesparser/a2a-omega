@@ -18,9 +18,9 @@ CONFIG (env, none committed) -------------------------------
                           (default /opt/omega/workspace/notes/agentverse.env)
   A2A_AGENTVERSE_API_KEY  the Agentverse JWT directly (overrides the file)
   A2A_OWN_AGENTS          comma list of agent names THIS machine acts for.
-                          default "omega-man". For the 4 LC/BC:
-                          "my-liberclaw,my-betterclaw,omega-liberclaw,omega-betterclaw"
-  A2A_SEED_PREFIX         default "a2a-myfleet-" (identity seed = prefix+name)
+                          default "agent-two". For the 4 LC/BC:
+                          "agent-three,agent-four,agent-five,agent-six"
+  A2A_SEED_PREFIX         default "a2a-omega-e2a-fleet-" (identity seed = prefix+name)
   A2A_POLL_SEC            mailbox poll interval, default 2
   A2A_ANSWER_BASE         (optional) OpenAI-compatible /chat/completions base URL
   A2A_ANSWER_KEY          (optional) Bearer key for that endpoint
@@ -32,8 +32,7 @@ CONFIG (env, none committed) -------------------------------
                           Stops one undeliverable message from blocking a mailbox.
   A2A_REPLY_FALLBACK      where to send an answer when the envelope's sender is
                           not a registered Agentverse agent (reply 404s). A fleet
-                          name or an agent1... address. Default empty, which
-                          disables redirection;
+                          name or an agent1... address. Default "agent-one";
                           empty disables redirection.
 
 Behaviour: every [a2a] message gets a REAL answer, never a bare acknowledgement.
@@ -63,13 +62,10 @@ import urllib.error
 from datetime import datetime
 
 BASE = os.environ.get("A2A_AGENTVERSE_BASE", "https://agentverse.ai").rstrip("/")
-SEED_PREFIX = os.environ.get("A2A_SEED_PREFIX", "a2a-myfleet-")
+SEED_PREFIX = os.environ.get("A2A_SEED_PREFIX", "a2a-omega-e2a-fleet-")
 POLL_SEC = int(os.environ.get("A2A_POLL_SEC", "2"))
 KEY_FILE = os.environ.get("A2A_AGENTVERSE_ENV", "/opt/omega/workspace/notes/agentverse.env")
-# No default: an installer must name the agents this machine owns. Defaulting
-# to someone else's agent name is how a fresh install starts draining a mailbox
-# it does not own.
-OWN_AGENTS = [a.strip() for a in os.environ.get("A2A_OWN_AGENTS", "").split(",") if a.strip()]
+OWN_AGENTS = [a.strip() for a in os.environ.get("A2A_OWN_AGENTS", "agent-two").split(",") if a.strip()]
 STATE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -128,7 +124,8 @@ def send_reply(key, as_agent, dst_addr, text):
 # Fleet-wide roster for batch send (a2a-omega-mesh broadcast semantics:
 # one logical message, shared batch id, fanned out to every other agent).
 FLEET = [a.strip() for a in os.environ.get(
-    "A2A_FLEET", "agent-one,agent-two,agent-three"
+    "A2A_FLEET",
+    "agent-one,agent-two,agent-three,agent-four,agent-five,agent-six"
 ).split(",") if a.strip()]
 
 LEDGER_DIR = os.environ.get("A2A_LEDGER_DIR",
@@ -138,6 +135,14 @@ LEDGER_DIR = os.environ.get("A2A_LEDGER_DIR",
 def load_ledger(name):
     """Grounded live state for an agent: {active, queue[], note}. Empty if absent.
     This is what makes status answers reflect reality instead of confabulation."""
+    if name == 'agent-two':  # LIVE_OMEGA 10-12: real file tail, not a stale hand-written ledger
+        try:
+            fp0 = '/workspace/ledgers/SCHEDULE.md'
+            t = open(fp0, errors='ignore').read()[-2600:]
+            mt = datetime.fromtimestamp(os.path.getmtime(fp0)).strftime('%Y-%m-%d %H:%M')
+            return {'active': None, 'queue': [], 'note': 'Your own SCHEDULE.md tail (last written ' + mt + '; newest at end): ' + t}
+        except Exception:
+            pass
     fp = os.path.join(LEDGER_DIR, f"{name}.json")
     try:
         with open(fp) as f:
@@ -225,21 +230,24 @@ def load_profile(name):
 
 
 def llm_answer(prompt, agent=None):
-    base = os.environ.get("A2A_ANSWER_BASE", "")
-    key = os.environ.get("A2A_ANSWER_KEY", "")
-    model = os.environ.get("A2A_ANSWER_MODEL", "")
-    if not (base and model):
-        return None
+    """Answer via an LLM. Prefers the agent's OWN brain (from its profile:
+    base/model/key - i.e. that agent's subscription LLM); falls back to the
+    global A2A_ANSWER_* env. Per-agent is checked FIRST so an agent with its
+    own LLM answers as itself even when the global brain is unset."""
+    gbase = os.environ.get("A2A_ANSWER_BASE", "")
+    gkey = os.environ.get("A2A_ANSWER_KEY", "")
+    gmodel = os.environ.get("A2A_ANSWER_MODEL", "")
     prof = load_profile(agent) if agent else {}
-    pmodel = prof.get("model") or model
-    pbase = (prof.get("base") or base).rstrip("/") + "/chat/completions"
-    pkey = prof.get("key") or key
+    pbase = (prof.get("base") or gbase).rstrip("/")
+    pmodel = prof.get("model") or gmodel
+    pkey = prof.get("key") or gkey
+    # A brain is usable when the agent's profile OR the global env supplies one.
+    if not (pbase and pmodel):
+        return None
     msgs = []
     system = prof.get("system", "")
     if agent:
-        fleet_label = os.environ.get("A2A_FLEET_LABEL", "this agent fleet")
-        role = os.environ.get("A2A_AGENT_ROLE", "an autonomous agent")
-        ctx = (f"You are {agent}, {role} on {fleet_label}. "
+        ctx = (f"You are {agent}, a whitehat security agent on the agent-one fleet. "
                f"Answer as {agent}. Your live work ledger: {json.dumps(load_ledger(agent))}")
         system = (ctx + "\n" + system).strip() if system else ctx
     if system:
@@ -251,7 +259,7 @@ def llm_answer(prompt, agent=None):
     if pkey:
         h["Authorization"] = "Bearer " + pkey
     try:
-        r = urllib.request.Request(pbase, data=body, headers=h, method="POST")
+        r = urllib.request.Request(pbase + "/chat/completions", data=body, headers=h, method="POST")
         d = json.loads(urllib.request.urlopen(r, timeout=60).read().decode())
         return (d["choices"][0]["message"]["content"] or "").strip()
     except Exception as e:
@@ -311,9 +319,7 @@ def _ack(name, key, me_addr, uid):
         pass
 
 
-# Empty by default: disabled. Pointing this at a name by default would send
-# every undeliverable answer from someone else's install into that mailbox.
-REPLY_FALLBACK = os.environ.get("A2A_REPLY_FALLBACK", "")
+REPLACE_ME = os.environ.get("A2A_REPLY_FALLBACK", "agent-one")
 
 # How much of an inbound reply is transcribed to the log (flattened to one line).
 INBOUND_LOG_CHARS = int(os.environ.get("A2A_INBOUND_LOG_CHARS", "1200"))
@@ -496,7 +502,7 @@ def main():
         log(f"ERROR: uagents SDK missing ({e}). Run: pip install uagents uagents_core")
         return 2
 
-    # One-shot OUTBOUND commands (any agent can use these, not just the owner):
+    # One-shot OUTBOUND commands (ANY agent can use these - not just jason):
     #   python omega_poller.py --send <as_name> <target> "<text>"
     #       sign as <as_name> (must be in OWN_AGENTS), deliver to <target>'s mailbox
     #   python omega_poller.py --batch "<text>"
@@ -513,7 +519,7 @@ def main():
         return 0 if st in (200, 202) else 1
     if len(sys.argv) > 1 and sys.argv[1] == "--batch" and len(sys.argv) >= 3:
         text = " ".join(sys.argv[2:])
-        as_name = OWN_AGENTS[0] if OWN_AGENTS else "omega-man"
+        as_name = OWN_AGENTS[0] if OWN_AGENTS else "agent-two"
         batch_id = "bc-" + secrets.token_hex(4)
         log(f"BATCH as {as_name} id={batch_id} to {len(FLEET)-1} peers")
         ok = 0
@@ -556,11 +562,6 @@ def main():
                 OWN_AGENTS = [want]
                 log(f"__actor={want}: this process answers for {want} only")
 
-    if not OWN_AGENTS:
-        print("refusing to start: A2A_OWN_AGENTS is empty. Name the agents this "
-              "machine owns, e.g. A2A_OWN_AGENTS=agent-one, or pass __actor=<name>.",
-              file=sys.stderr)
-        return 2
     log(f"omega poller starting: acting for {OWN_AGENTS}, poll every {POLL_SEC}s")
     once = "--once" in sys.argv
     while True:

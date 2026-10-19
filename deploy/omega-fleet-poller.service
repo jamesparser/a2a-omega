@@ -1,0 +1,14 @@
+[Unit]
+Description=omega A2A unified fleet poller keeper (agentverse-retry + agentmail + e2a read; one actor per fleet agent)
+Documentation=file://README-A2A.md
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStart=/bin/bash -c 'while true; do /root/omega_fleet_poller_keeper.sh; sleep 10; done'
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target
